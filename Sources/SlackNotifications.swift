@@ -7,8 +7,8 @@ struct SlackNotificationPreview: Equatable {
     let body: String
     let receivedAt: Date
 
-    /// Bildirim arayüzünün uygulama adı alanı tam olarak Slack olmalı.
-    /// Mesaj gövdesinde "Slack" geçmesi kaynak doğrulaması sayılmaz.
+    /// The notification's app name field must match Slack exactly.
+    /// Mentioning Slack in the message body does not establish its source.
     static func parse(sourceID: String, description: String, date: Date) -> SlackNotificationPreview? {
         let parts = description.split(separator: ",", maxSplits: 2, omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -21,7 +21,7 @@ struct SlackNotificationPreview: Equatable {
     var fingerprint: String { "\(sourceID)\u{1f}\(title)\u{1f}\(body)" }
 }
 
-/// Yalnızca ekrana teslim edilen Slack banner'ları. Veritabanı/oturum anahtarı okunmaz.
+/// Only Slack banners delivered to the screen; no database or session keys are read.
 private enum SlackBannerReader {
     struct Scan {
         var previews: [SlackNotificationPreview] = []
@@ -54,8 +54,8 @@ private enum SlackBannerReader {
             let banner = subrole.hasPrefix("AXNotificationCenterBanner") || subrole.hasPrefix("AXNotificationCenterAlert")
             if banner {
                 result.banners += 1
-                // Yeni macOS sürümleri bütün banner'ları tek host pencerede tutabilir.
-                // Her banner'ın kendi uygulama alanını kontrol et; pencere adını kullanma.
+                // Newer macOS versions may host all banners in a single window.
+                // Check each banner's app field instead of the shared window name.
                 let description = text(element, "AXAttributedDescription") ?? text(element, kAXDescriptionAttribute) ?? ""
                 let sourceID = text(element, kAXIdentifierAttribute) ?? String(CFHash(element))
                 if let preview = SlackNotificationPreview.parse(sourceID: sourceID,
@@ -75,7 +75,7 @@ private enum SlackBannerReader {
     }
 }
 
-/// Liste ve tekrar kontrolü bellekte tutulur; kilit kalkınca tamamen silinir.
+/// Previews and deduplication state stay in memory and are cleared on unlock.
 @MainActor
 final class SlackNotificationMonitor {
     var onUpdate: (([SlackNotificationPreview], String) -> Void)?
@@ -138,7 +138,7 @@ final class SlackNotificationMonitor {
             seenOrder.removeFirst(excess)
         }
         previews = Array(previews.prefix(3))
-        onUpdate?(previews, "Yalnızca bu kilit sırasında gelen Slack bildirimleri")
+        onUpdate?(previews, "Only Slack notifications received during this lock")
         if newCount > 0 { onNewNotification?() }
         return newCount
     }
@@ -146,13 +146,13 @@ final class SlackNotificationMonitor {
     private func scan() {
         guard active, !scanning else { return }
         guard AXIsProcessTrusted() else {
-            diagnostic("Erişilebilirlik izni yok")
-            onUpdate?(previews, "Slack önizlemesi için Erişilebilirlik izni gerekli")
+            diagnostic("Accessibility permission is missing")
+            onUpdate?(previews, "Accessibility permission is required for Slack previews")
             return
         }
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.notificationcenterui").first else {
-            diagnostic("Bildirim Merkezi işlemi bulunamadı")
-            onUpdate?(previews, "macOS bildirim arayüzü bekleniyor")
+            diagnostic("Notification Center process was not found")
+            onUpdate?(previews, "Waiting for the macOS notification interface")
             return
         }
         attachObserver(to: app.processIdentifier)
@@ -165,9 +165,9 @@ final class SlackNotificationMonitor {
                 guard let self else { return }
                 self.scanning = false
                 guard self.active, self.generation == currentGeneration else { return }
-                self.diagnostic("pencere: \(scan.windows), banner: \(scan.banners), Slack: \(scan.previews.count)")
+                self.diagnostic("windows: \(scan.windows), banners: \(scan.banners), Slack: \(scan.previews.count)")
                 let received = self.consume(scan.previews, initial: !self.seeded)
-                if received > 0 { Log.write("Geçici kilit: yeni Slack bildirimi yakalandı (adet: \(received))") }
+                if received > 0 { Log.write("Temporary lock: new Slack notifications received (count: \(received))") }
                 self.seeded = true
             }
         }
@@ -176,7 +176,7 @@ final class SlackNotificationMonitor {
     private func diagnostic(_ message: String) {
         guard lastDiagnostic != message else { return }
         lastDiagnostic = message
-        Log.write("Geçici kilit bildirim izleyicisi: \(message)")
+        Log.write("Temporary lock notification monitor: \(message)")
     }
 
     private func attachObserver(to pid: pid_t) {

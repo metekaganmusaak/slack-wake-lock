@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kaynak klasöründe derler; release klasöründe hazır Slack Wake Lock.app'i kullanır.
+# Build from source or use the prebuilt Slack Wake Lock.app in a release folder.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,32 +16,32 @@ else
   SOURCE_APP="build/Slack Wake Lock.app"
 fi
 if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$SOURCE_APP/Contents/Info.plist")" != "$LABEL" ]]; then
-  echo "Geçersiz Slack Wake Lock uygulama paketi" >&2
+  echo "Invalid Slack Wake Lock app bundle" >&2
   exit 1
 fi
 codesign --verify --deep --strict "$SOURCE_APP"
 if [[ -e "$DEST" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$DEST/Contents/Info.plist" 2>/dev/null || true)" != "$LABEL" ]]; then
-  echo "Hedefte farklı bir uygulama var: $DEST" >&2
+  echo "A different app already exists at the destination: $DEST" >&2
   exit 1
 fi
 
-# Çalışan eski sürümü durdur
+# Stop the previous running version
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 pkill -x Wakelock 2>/dev/null || true
 
-# Yeni derlenen uygulama macOS için "yeni" bir uygulamadır; eski Erişilebilirlik kaydını temizle ki izin penceresi düzgün çıksın
+# Clear stale Accessibility registration so macOS can prompt for the rebuilt app.
 tccutil reset Accessibility "$LABEL" >/dev/null 2>&1 || true
 
 mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents"
 rm -rf "$DEST"
 ditto --norsrc --noextattr --noacl "$SOURCE_APP" "$DEST"
 codesign --verify --deep --strict "$DEST"
-# Eski adı taşıyan kendi paketimizi kaldır; ayar ve günlük yolları korunur.
+# Remove only our legacy app bundle; preserve settings and log paths.
 if [[ -d "$LEGACY_DEST" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$LEGACY_DEST/Contents/Info.plist" 2>/dev/null || true)" == "$LABEL" ]]; then
   rm -rf "$LEGACY_DEST"
 fi
 
-# Kullanıcı dizinindeki &, tırnak vb. karakterleri XML'e güvenli yaz.
+# Safely encode paths containing ampersands, quotes, or other XML characters.
 AGENT_TEMP="$(mktemp "$PLIST.tmp.XXXXXX")"
 trap 'rm -f "$AGENT_TEMP"' EXIT
 plutil -create xml1 "$AGENT_TEMP"
@@ -57,23 +57,23 @@ plutil -insert AssociatedBundleIdentifiers -array "$AGENT_TEMP"
 plutil -insert AssociatedBundleIdentifiers.0 -string "$LABEL" "$AGENT_TEMP"
 mv "$AGENT_TEMP" "$PLIST"
 
-# Slack arka plandayken macOS onu "uyutmasın" (App Nap kapalı)
+# Disable App Nap for Slack while it runs in the background.
 defaults write com.tinyspeck.slackmacgap NSAppSleepDisabled -bool YES
 
 launchctl bootstrap "$DOMAIN" "$PLIST"
 
 REGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [[ -x "$REGISTER" ]]; then "$REGISTER" -f "$DEST" >/dev/null 2>&1 || true; fi
-# Finder önbelleği yenilenemezse başarılı kurulumu hata sayma.
+# A failed Finder cache refresh must not fail an otherwise successful install.
 touch "$DEST" 2>/dev/null || true
 
 cat <<'MSG'
 
-Slack Wake Lock kuruldu ve çalışıyor (menü çubuğunda ⚡️ / ⚠️ simgesi).
+Slack Wake Lock is installed and running (look for ⚡️ / ⚠️ in the menu bar).
 
-Son adım: macOS bir "Erişilebilirlik" izni penceresi açacak.
-  Sistem Ayarları > Gizlilik ve Güvenlik > Erişilebilirlik > "Slack Wake Lock" anahtarını aç.
-  (Pencere çıkmazsa menü çubuğundaki simgeye tıkla > "Erişilebilirlik izni gerekli".)
+Final step: macOS may show an Accessibility permission prompt.
+  Enable "Slack Wake Lock" in System Settings > Privacy & Security > Accessibility.
+  (If no prompt appears, click the menu bar icon > "Accessibility permission required".)
 
-Slack masaüstü uygulaması yüklü değilse: https://slack.com/downloads/mac
+Download the Slack desktop app if needed: https://slack.com/downloads/mac
 MSG

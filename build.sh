@@ -1,17 +1,17 @@
 #!/bin/bash
-# Yerel mimari: ./build.sh; Apple Silicon + Intel: ./build.sh --universal
+# Native architecture: ./build.sh; Apple Silicon + Intel: ./build.sh --universal
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_VERSION="$(tr -d '\r\n' < VERSION)"
 if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Geçersiz VERSION: major.minor.patch biçimi gerekli" >&2
+  echo "Invalid VERSION: expected major.minor.patch" >&2
   exit 1
 fi
 case "${1:-}" in
   "") ARCHITECTURES=("$(uname -m)") ;;
   --universal) ARCHITECTURES=(arm64 x86_64) ;;
-  *) echo "Kullanım: ./build.sh [--universal]" >&2; exit 2 ;;
+  *) echo "Usage: ./build.sh [--universal]" >&2; exit 2 ;;
 esac
 
 APP="build/Slack Wake Lock.app"
@@ -41,6 +41,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key>        <string>local.wakelock</string>
   <key>CFBundleName</key>              <string>Slack Wake Lock</string>
   <key>CFBundleDisplayName</key>       <string>Slack Wake Lock</string>
+  <key>CFBundleDevelopmentRegion</key> <string>en</string>
+  <key>CFBundleLocalizations</key>     <array><string>en</string></array>
   <key>CFBundleExecutable</key>        <string>Wakelock</string>
   <key>CFBundleIconFile</key>          <string>Wakelock.icns</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
@@ -48,7 +50,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleVersion</key>           <string>1</string>
   <key>LSMinimumSystemVersion</key>    <string>13.0</string>
   <key>LSUIElement</key>               <true/>
-  <key>NSHumanReadableCopyright</key>  <string>Slack'te mesai saatlerinde çevrimiçi kal</string>
+  <key>NSHumanReadableCopyright</key>  <string>Keep your Mac awake during work hours</string>
 </dict>
 </plist>
 PLIST
@@ -57,4 +59,4 @@ PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$APP/Contents/Info.plist"
 codesign --force --sign - --identifier local.wakelock "$APP" >/dev/null
 codesign --verify --deep --strict "$APP"
-echo "Derlendi: $APP"
+echo "Built: $APP"

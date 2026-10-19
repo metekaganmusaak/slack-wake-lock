@@ -10,9 +10,9 @@ struct BatteryStatus {
     static let unavailable = BatteryStatus(percentage: nil, charging: false, pluggedIn: false)
 
     var text: String {
-        guard let percentage else { return "Pil bilgisi alınamadı" }
-        let state = charging ? "Şarj oluyor" : pluggedIn ? (percentage == 100 ? "Tam dolu" : "Prize bağlı") : "Pille çalışıyor"
-        return "%\(percentage) · \(state)"
+        guard let percentage else { return "Battery information unavailable" }
+        let state = charging ? "Charging" : pluggedIn ? (percentage == 100 ? "Fully charged" : "Plugged in") : "On battery"
+        return "\(percentage)% · \(state)"
     }
 
     var symbol: String {
@@ -46,8 +46,8 @@ struct BatteryStatus {
     }
 }
 
-/// DisplayServices, Apple Silicon'da da fiziksel arka ışığı kontrol eder.
-/// API yoksa/donanım desteklemiyorsa sistem ayarlarına dokunmadan başarısız olur.
+/// DisplayServices controls the physical backlight, including on Apple Silicon.
+/// Unsupported APIs or displays fail without changing system settings.
 enum DisplayBrightness {
     private typealias Get = @convention(c) (UInt32, UnsafeMutablePointer<Float>) -> Int32
     private typealias Set = @convention(c) (UInt32, Float) -> Int32
@@ -73,7 +73,7 @@ enum DisplayBrightness {
     }
 }
 
-/// Slack için üretilen sanal hareketlerden bağımsız, gerçek kullanıcı hareketsizliği.
+/// Tracks real user inactivity independently of synthetic Slack nudges.
 @MainActor
 final class LockDimmingController {
     private(set) var isDimmed = false
@@ -157,13 +157,13 @@ final class LockDimmingController {
     private func dimDisplays() {
         for display in displays {
             guard let original = originals[display] else { continue }
-            // Zaten düşük bir parlaklığı yükseltme; en fazla %5'e indir.
+            // Dim to at most 5%; never increase an already lower brightness.
             let value = min(original, 0.05)
             if value == original { continue }
             if write(display, value) {
                 changed.insert(display)
             } else {
-                Log.write("Geçici kilit: \(display) ekranının parlaklığı kısılamadı")
+                Log.write("Temporary lock: could not dim display \(display)")
             }
         }
     }
@@ -173,7 +173,7 @@ final class LockDimmingController {
             if let original = originals[display], write(display, original) {
                 changed.remove(display)
             } else {
-                Log.write("Geçici kilit: \(display) ekranının parlaklığı geri yüklenemedi")
+                Log.write("Temporary lock: could not restore brightness for display \(display)")
             }
         }
     }

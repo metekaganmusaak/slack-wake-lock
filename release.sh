@@ -1,5 +1,5 @@
 #!/bin/bash
-# Temiz kaynak ZIP'i ve universal macOS uygulama ZIP'i üretir; yayınlamaz.
+# Create clean source and universal macOS app ZIPs without publishing them.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -20,7 +20,7 @@ for item in install.sh uninstall.sh LICENSE PRIVACY.md RELEASE.md; do
 done
 cp RELEASE.md "$STAGE_DIR/$RELEASE_NAME/README.md"
 
-# Açık dosya listesi: build, .git, yerel ayarlar, günlükler ve sertifikalar eklenmez.
+# Explicit allowlist: exclude build output, .git, local settings, logs, and certificates.
 for item in Sources Tests Assets build.sh install.sh uninstall.sh test.sh release.sh VERSION README.md LICENSE PRIVACY.md RELEASE.md .gitignore; do
   ditto --norsrc --noextattr --noacl "$item" "$STAGE_DIR/$SOURCE_NAME/$item"
 done
@@ -35,6 +35,6 @@ done
   cd "$DIST_DIR"
   shasum -a 256 "$RELEASE_NAME.zip" "$SOURCE_NAME.zip" > "Slack-Wake-Lock-$APP_VERSION-SHA256SUMS.txt"
 )
-echo "Hazır: dist/$RELEASE_NAME.zip"
-echo "Hazır: dist/$SOURCE_NAME.zip"
-echo "Hazır: dist/Slack-Wake-Lock-$APP_VERSION-SHA256SUMS.txt"
+echo "Ready: dist/$RELEASE_NAME.zip"
+echo "Ready: dist/$SOURCE_NAME.zip"
+echo "Ready: dist/Slack-Wake-Lock-$APP_VERSION-SHA256SUMS.txt"

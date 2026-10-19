@@ -1,13 +1,13 @@
 #!/bin/bash
-# Açık macOS oturumunda geçici kaplamayı kısa süre göstererek test eder.
+# Test the temporary overlay briefly in an active macOS session.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 TEST_DIR="$(mktemp -d /tmp/wakelock-tests.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
-# Üretim türlerini aynı dosya kapsamında derle; yalnızca giriş noktasını değiştir.
-sed '/^\/\/ MARK: - Giriş noktası/,$d' Sources/main.swift > "$TEST_DIR/main.swift"
+# Compile production types in the same file scope, replacing only the entry point.
+sed '/^\/\/ MARK: - Entry point/,$d' Sources/main.swift > "$TEST_DIR/main.swift"
 cat Tests/TemporaryLockTests.swift >> "$TEST_DIR/main.swift"
 cat >> "$TEST_DIR/main.swift" <<'SWIFT'
 MainActor.assumeIsolated {

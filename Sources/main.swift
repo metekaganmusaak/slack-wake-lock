@@ -1,18 +1,12 @@
-// Slack Wake Lock — Slack masaüstü uygulamasında mesai saatlerinde "çevrimiçi" görünmeni sağlayan menü çubuğu uygulaması.
-//
-// Nasıl çalışır?
-//   Slack masaüstü uygulaması, bilgisayarın klavye/fare için tuttuğu "boşta kalma" sayacına bakar;
-//   sayaç 10 dakikayı geçince seni "uzakta" gösterir. Slack Wake Lock mesai saatlerinde, sen 1 dakikadan uzun
-//   süre bilgisayara dokunmazsan fareyi olduğu yerde sanal olarak "kıpırdatır" (imleç yerinden oynamaz),
-//   böylece sayaç hiç 10 dakikaya ulaşmaz. Molalarda ve mesai dışında hiçbir şey yapmaz: o saatlerde
-//   bilgisayarı gerçekten kullanıyorsan Slack seni zaten çevrimiçi gösterir, kullanmıyorsan uzakta.
+// Slack Wake Lock — scheduled idle prevention and a temporary desktop overlay.
+// Slack presence depends on its own activity rules, settings, and connectivity.
 
 import AppKit
 import ApplicationServices
 import CoreGraphics
 import IOKit.pwr_mgt
 
-// MARK: - Dosya yolları ve küçük yardımcılar
+// MARK: - Paths and small helpers
 
 enum Paths {
     static let home = FileManager.default.homeDirectoryForCurrentUser
@@ -36,11 +30,11 @@ enum Fmt {
     static let day = make("yyyy-MM-dd")
     static let hm = make("HH:mm")
     static let hms = make("HH:mm:ss")
-    static let pretty = make("d MMMM EEEE", "tr_TR")
-    static let shortDay = make("d MMM HH:mm", "tr_TR")
+    static let pretty = make("EEEE, MMMM d", "en_US_POSIX")
+    static let shortDay = make("MMM d, HH:mm", "en_US_POSIX")
 }
 
-/// "08:45" -> 525 (gece yarısından itibaren dakika)
+/// "08:45" -> 525 (minutes since midnight)
 func parseHHmm(_ s: String) -> Int? {
     let p = s.trimmingCharacters(in: .whitespaces).split(separator: ":")
     guard p.count == 2, let h = Int(p[0]), let m = Int(p[1]), (0...24).contains(h), (0..<60).contains(m) else { return nil }
@@ -59,9 +53,9 @@ func minutesSinceMidnight(_ date: Date) -> Int {
 }
 
 func durationText(_ seconds: Int) -> String {
-    if seconds < 60 { return "\(seconds) sn" }
-    if seconds < 3600 { return "\(seconds / 60) dk \(seconds % 60) sn" }
-    return "\(seconds / 3600) sa \((seconds % 3600) / 60) dk"
+    if seconds < 60 { return "\(seconds) s" }
+    if seconds < 3600 { return "\(seconds / 60) min \(seconds % 60) s" }
+    return "\(seconds / 3600) h \((seconds % 3600) / 60) min"
 }
 
 enum Log {
@@ -82,41 +76,46 @@ enum Log {
     }
 }
 
-// MARK: - Ayarlar (~/Library/Application Support/Wakelock/config.json)
+// MARK: - Settings (~/Library/Application Support/Wakelock/config.json)
 
 struct Config: Codable {
     struct Break: Codable {
         var name: String
         var start: String
         var end: String
+
+        // Keep existing config files intact while translating the former default label.
+        var displayName: String {
+            name == "\u{00D6}\u{011F}le molas\u{0131}" ? "Lunch break" : name
+        }
     }
 
     struct Friday: Codable {
-        var enabled = false             // genel dağıtımda isteğe bağlı; açılmadan API isteği yapılmaz
+        var enabled = false             // opt-in for public distribution; no API requests until enabled
         var city = "Istanbul"
         var country = "Turkey"
-        var method = 13                  // 13 = Diyanet İşleri Başkanlığı hesaplama yöntemi
-        var minutesBeforeEzan = 15       // camiye gitmek için ezandan bu kadar önce mola başlar
-        var minutesAfterEzan = 45        // namaz bitip dönünce, ezandan bu kadar sonra mola biter
-        var fallbackLongitude = 28.97    // internet yoksa yaklaşık hesap için boylam (İstanbul)
+        var method = 13                  // 13 = Diyanet calculation method
+        var minutesBeforeEzan = 15       // minutes before prayer time when the break starts
+        var minutesAfterEzan = 45        // minutes after prayer time when the break ends
+        var fallbackLongitude = 28.97    // longitude for offline estimates (Istanbul)
     }
 
-    var workDays = [1, 2, 3, 4, 5]       // 1 = Pazartesi … 7 = Pazar
+    var workDays = [1, 2, 3, 4, 5]       // 1 = Monday through 7 = Sunday
     var workStart = "08:45"
     var workEnd = "18:00"
-    var breaks = [Break(name: "Öğle molası", start: "12:00", end: "13:00")]
+    var breaks = [Break(name: "Lunch break", start: "12:00", end: "13:00")]
     var friday = Friday()
-    var holidays: [String] = []          // "2026-10-29" gibi; bu günler hiç çalışmaz
-    var slackAwayAfterMinutes = 10       // Slack'in seni uzakta göstermesi için gereken hareketsizlik
-    var nudgeWhenIdleSeconds = 60        // bu kadar süre dokunmazsan fare kıpırdatılır
-    var afterHoursGraceMinutes = 30      // mesai dışında çalışıyorsan, son hareketinden sonra bu kadar çevrimiçi tut
+    var holidays: [String] = []          // e.g. "2026-10-29"; inactive on these dates
+    var slackAwayAfterMinutes = 10       // assumed Slack inactivity interval before becoming away
+    var nudgeWhenIdleSeconds = 60        // nudge after this many seconds without real input
+    var afterHoursGraceMinutes = 30      // grace period after real input outside work hours
     var keepDisplayAwakeDuringBreaks = true
     var launchSlackIfClosed = true
     var lockScreenSlackSound = true
 
     static var lastError: String?
 
-    /// Dosyada olmayan alanlar varsayılan değerleriyle tamamlanır; bozuk dosyada varsayılanlar kullanılır.
+    /// Fill missing fields with defaults; use defaults if the file is invalid.
     static func load() -> Config {
         let defaults = Config()
         guard let data = try? Data(contentsOf: Paths.config) else {
@@ -131,7 +130,7 @@ struct Config: Codable {
             lastError = nil
             return config
         } catch {
-            lastError = "config.json okunamadı, varsayılanlar kullanılıyor"
+            lastError = "Could not read config.json; using defaults"
             Log.write("\(lastError!): \(error)")
             return defaults
         }
@@ -161,10 +160,10 @@ struct AppState: Codable {
     var pausedUntil: Date?
 }
 
-// MARK: - Cuma ezan vakti (aladhan.com, Diyanet yöntemi; aylık önbellek + çevrimdışı yaklaşık hesap)
+// MARK: - Friday prayer time (aladhan.com, Diyanet; monthly cache and offline estimate)
 
 final class PrayerTimes {
-    private var cache: [String: [String: String]] = [:]   // "şehir|ülke|yöntem" -> ["2026-10-23": "12:53"]
+    private var cache: [String: [String: String]] = [:]   // "city|country|method" -> ["2026-10-23": "12:53"]
     private var inFlight = Set<String>()
     private var failedAt: [String: Date] = [:]
     var onUpdate: (() -> Void)?
@@ -180,8 +179,8 @@ final class PrayerTimes {
         "\(f.city.lowercased())|\(f.country.lowercased())|\(f.method)"
     }
 
-    /// Verilen günün öğle ezanı (gece yarısından itibaren dakika). Önbellekte yoksa indirmeyi başlatır
-    /// ve o sırada yaklaşık hesabı döndürür.
+    /// Prayer time in minutes since midnight. Start a download if not cached
+    /// and return an estimate in the meantime.
     func dhuhr(on date: Date, _ f: Config.Friday) -> (minutes: Int, approximate: Bool) {
         if let s = cache[Self.key(f)]?[Fmt.day.string(from: date)], let m = parseHHmm(s) {
             return (m, false)
@@ -190,7 +189,7 @@ final class PrayerTimes {
         return (Self.approxDhuhr(on: date, longitude: f.fallbackLongitude), true)
     }
 
-    /// Bu ayı ve bir hafta sonrasının ayını önceden indir (bir sonraki Cuma her zaman hazır olsun).
+    /// Prefetch this month and the month a week ahead to cover the next Friday.
     func prefetch(_ date: Date, _ f: Config.Friday) {
         fetchMonth(of: date, f)
         if let next = Calendar.current.date(byAdding: .day, value: 7, to: date) {
@@ -219,11 +218,11 @@ final class PrayerTimes {
                 self.inFlight.remove(job)
                 if let days, !days.isEmpty {
                     self.store(days, f)
-                    Log.write("Namaz vakitleri indirildi: \(f.city) \(prefix.dropLast()) (\(days.count) gün)")
+                    Log.write("Prayer times downloaded: \(f.city) \(prefix.dropLast()) (\(days.count) days)")
                     self.onUpdate?()
                 } else {
                     self.failedAt[job] = Date()
-                    Log.write("Namaz vakitleri alınamadı (\(f.city) \(prefix.dropLast())): \(error ?? "geçersiz yanıt"); yaklaşık hesap kullanılıyor")
+                    Log.write("Could not fetch prayer times (\(f.city) \(prefix.dropLast())): \(error ?? "invalid response"); using an estimate")
                 }
             }
         }
@@ -248,7 +247,7 @@ final class PrayerTimes {
         }.resume()
     }
 
-    /// Yanıttaki her gün için "yyyy-MM-dd" -> "HH:mm" (Dhuhr = öğle).
+    /// Map each day in the response from "yyyy-MM-dd" to its Dhuhr time "HH:mm".
     static func parse(_ data: Data?) -> [String: String]? {
         guard let data,
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -268,7 +267,7 @@ final class PrayerTimes {
         return out
     }
 
-    /// İnternet yoksa: güneşin tam tepe noktası (NOAA formülü) + Diyanet'in ~5 dk temkini.
+    /// Offline estimate: solar noon (NOAA formula) plus Diyanet's ~5-minute margin.
     static func approxDhuhr(on date: Date, longitude: Double) -> Int {
         let n = Double(Calendar.current.ordinality(of: .day, in: .year, for: date) ?? 1)
         let g = 2 * Double.pi / 365 * (n - 1)
@@ -279,7 +278,7 @@ final class PrayerTimes {
     }
 }
 
-// MARK: - Günlük plan
+// MARK: - Daily schedule
 
 struct DayPlan {
     struct Block {
@@ -289,11 +288,11 @@ struct DayPlan {
     }
 
     enum Phase {
-        case offDay(String)                     // hafta sonu / tatil
+        case offDay(String)                     // weekend / holiday
         case beforeWork
         case afterWork
-        case working(until: Int)                // aktif tutuluyor
-        case windingDown(next: String, at: Int) // mola/mesai bitişi yaklaşıyor, Slack'in kendiliğinden uzakta'ya geçmesi bekleniyor
+        case working(until: Int)                // keep awake is active
+        case windingDown(next: String, at: Int) // stop nudging ahead of a break or the end of work
         case onBreak(String, until: Int)
 
         var isWorking: Bool {
@@ -306,8 +305,8 @@ struct DayPlan {
     let offReason: String
     let workStart: Int
     let workEnd: Int
-    let breaks: [Block]      // birleştirilmiş, sıralı
-    let nudge: [Block]       // fare kıpırdatılan aralıklar
+    let breaks: [Block]      // merged and sorted
+    let nudge: [Block]       // mouse-nudging intervals
     let ezan: Int?
     let ezanApproximate: Bool
 
@@ -318,10 +317,10 @@ struct DayPlan {
 
         if config.holidays.contains(Fmt.day.string(from: date)) {
             isWorkday = false
-            offReason = "Tatil günü"
+            offReason = "Holiday"
         } else if !config.workDays.contains(isoWeekday) {
             isWorkday = false
-            offReason = "Hafta sonu"
+            offReason = "Weekend"
         } else {
             isWorkday = true
             offReason = ""
@@ -329,13 +328,13 @@ struct DayPlan {
 
         var raw: [Block] = config.breaks.compactMap { b in
             guard let s = parseHHmm(b.start), let e = parseHHmm(b.end), e > s else { return nil }
-            return Block(label: b.name, start: s, end: e)
+            return Block(label: b.displayName, start: s, end: e)
         }
         if isoWeekday == 5 && config.friday.enabled {
             let d = prayer.dhuhr(on: date, config.friday)
             ezan = d.minutes
             ezanApproximate = d.approximate
-            raw.append(Block(label: "Cuma namazı",
+            raw.append(Block(label: "Friday prayer",
                              start: d.minutes - config.friday.minutesBeforeEzan,
                              end: d.minutes + config.friday.minutesAfterEzan))
         } else {
@@ -343,7 +342,7 @@ struct DayPlan {
             ezanApproximate = false
         }
 
-        // Çakışan molaları birleştir (ör. kışın Cuma namazı öğle molasının içine düşer)
+        // Merge overlapping breaks, such as Friday prayer and lunch.
         var merged: [Block] = []
         for b in raw.sorted(by: { $0.start < $1.start }) {
             if var last = merged.last, b.start <= last.end {
@@ -356,7 +355,7 @@ struct DayPlan {
         }
         breaks = merged
 
-        // Mesai aralığından molaları çıkar
+        // Subtract breaks from the work interval.
         var active: [Block] = []
         var cursor = workStart
         for b in merged where b.end > workStart && b.start < workEnd {
@@ -365,8 +364,8 @@ struct DayPlan {
         }
         if cursor < workEnd { active.append(Block(label: "", start: cursor, end: workEnd)) }
 
-        // Kıpırdatmayı her aralığın sonundan "Slack uzakta süresi" kadar önce bırak:
-        // böylece 12:00'de (ya da 18:00'de) Slack seni tam vaktinde uzakta gösterir.
+        // Stop nudging one assumed Slack away interval before each segment ends.
+        // This gives Slack time to become away around the scheduled boundary.
         let lead = max(0, config.slackAwayAfterMinutes)
         nudge = active.compactMap { a in
             a.end - lead > a.start ? Block(label: "", start: a.start, end: a.end - lead) : nil
@@ -386,28 +385,28 @@ struct DayPlan {
         if let next = breaks.first(where: { $0.start > m && $0.start < workEnd }) {
             return .windingDown(next: next.label, at: next.start)
         }
-        return .windingDown(next: "Mesai bitişi", at: workEnd)
+        return .windingDown(next: "End of workday", at: workEnd)
     }
 
     func lines(_ config: Config) -> [String] {
-        guard isWorkday else { return ["\(offReason): Slack Wake Lock bugün hiçbir şey yapmaz"] }
-        var items: [(Int, String)] = nudge.map { ($0.start, "🟢  \(hm($0.start))–\(hm($0.end))   çevrimiçi tutulur") }
+        guard isWorkday else { return ["\(offReason): Slack Wake Lock is inactive today"] }
+        var items: [(Int, String)] = nudge.map { ($0.start, "🟢  \(hm($0.start))–\(hm($0.end))   keep awake") }
         for b in breaks where b.end > workStart && b.start < workEnd {
-            let icon = b.label.contains("Cuma") ? "🕌" : "☕️"
+            let icon = b.label.contains("Friday") ? "🕌" : "☕️"
             items.append((b.start, "\(icon)  \(hm(b.start))–\(hm(b.end))   \(b.label)"))
         }
         var out = items.sorted { $0.0 < $1.0 }.map { $0.1 }
         if let ezan {
-            out.append("🕌  Cuma ezanı (\(config.friday.city)): \(hm(ezan))\(ezanApproximate ? " (yaklaşık, internet bekleniyor)" : "")")
+            out.append("🕌  Friday prayer time (\(config.friday.city)): \(hm(ezan))\(ezanApproximate ? " (estimated, waiting for internet)" : "")")
         }
         if config.afterHoursGraceMinutes > 0 {
-            out.append("🌙  Mesai dışında: sadece sen çalışıyorsan (son hareketinden +\(config.afterHoursGraceMinutes) dk)")
+            out.append("🌙  Outside work hours: only while you are active (+\(config.afterHoursGraceMinutes) min after your last input)")
         }
         return out
     }
 }
 
-// MARK: - Fare kıpırdatma (Slack'in baktığı "boşta kalma" sayacını sıfırlar)
+// MARK: - Mouse nudging (refresh the system idle timer)
 
 final class Nudger {
     static let anyInputEvent = CGEventType(rawValue: ~0)!
@@ -422,21 +421,21 @@ final class Nudger {
     private var wiggle = false
     private var userActivityID: IOPMAssertionID = 0
 
-    /// Son klavye/fare hareketinden bu yana geçen saniye (Slack/Electron da tam olarak buna bakar).
+    /// Seconds since the last keyboard or mouse input.
     static var idleSeconds: TimeInterval {
         CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInputEvent)
     }
 
-    /// AXIsProcessTrusted izin verilince hemen güncellenir; CGPreflightPostEventAccess ise uygulama yeniden başlayana kadar eski cevabı verebilir.
+    /// AXIsProcessTrusted updates immediately; event-posting access may stay stale until relaunch.
     static var hasPermission: Bool { AXIsProcessTrusted() || CGPreflightPostEventAccess() }
 
     static func requestPermission() { _ = CGRequestPostEventAccess() }
 
     func nudge() {
-        // Güç yönetimine "kullanıcı aktif" bildir (ekranı da uyanık tutar)
+        // Declare local user activity to power management, also keeping the display awake.
         IOPMAssertionDeclareUserActivity("Slack Wake Lock" as CFString, kIOPMUserActiveLocal, &userActivityID)
 
-        // Fareyi olduğu yere "taşı": imleç yerinden oynamaz ama sistem bunu gerçek hareket sayar
+        // Move the pointer to its existing position to attempt an idle reset.
         if Self.hasPermission, let position = CGEvent(source: nil)?.location {
             let source = CGEventSource(stateID: .hidSystemState)
             if wiggle { post(CGPoint(x: position.x + 1, y: position.y), source) }
@@ -444,17 +443,17 @@ final class Nudger {
         }
         lastNudgeAt = Date()
 
-        // İşe yaradı mı? Yaramadıysa bir dahakine 1 piksel gidip geri gel.
+        // If that did not reset idle time, use a one-pixel round trip next time.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { return }
             let worked = Self.idleSeconds < 2
             if !worked && !self.wiggle && Self.hasPermission {
                 self.wiggle = true
-                Log.write("Yerinde hareket sayacı sıfırlamadı; 1 piksel gidip gelmeye geçiliyor")
+                Log.write("Stationary movement did not reset idle time; switching to a 1-pixel round trip")
             }
             if worked != self.lastNudgeWorked {
-                Log.write(worked ? "Kıpırdatma çalışıyor (boşta sayacı sıfırlandı)"
-                                 : "UYARI: Kıpırdatma boşta sayacını sıfırlamadı (Erişilebilirlik izni?)")
+                Log.write(worked ? "Mouse nudging is working (idle time reset)"
+                                 : "WARNING: Mouse nudging did not reset idle time (Accessibility permission?)")
             }
             self.lastNudgeWorked = worked
         }
@@ -468,7 +467,7 @@ final class Nudger {
     }
 }
 
-// MARK: - Uyku / ekran kapanmasını engelleme
+// MARK: - Preventing system and display sleep
 
 final class PowerAssertions {
     private var systemID: IOPMAssertionID = 0
@@ -489,7 +488,7 @@ final class PowerAssertions {
     }
 }
 
-// MARK: - Slack ve otomatik başlatma
+// MARK: - Slack and launch at login
 
 enum Slack {
     static let bundleID = "com.tinyspeck.slackmacgap"
@@ -503,7 +502,7 @@ enum Slack {
         configuration.activates = false
         configuration.hides = true
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-            Log.write(error.map { "Slack başlatılamadı: \($0.localizedDescription)" } ?? "Slack kapalıydı, arka planda açıldı")
+            Log.write(error.map { "Could not launch Slack: \($0.localizedDescription)" } ?? "Slack was closed; opened in the background")
         }
     }
 }
@@ -518,7 +517,7 @@ enum LoginItem {
             "Label": label,
             "ProgramArguments": [executable],
             "RunAtLoad": true,
-            "KeepAlive": ["SuccessfulExit": false],   // çökerse yeniden başlat, "Çık" dersen başlatma
+            "KeepAlive": ["SuccessfulExit": false],   // restart after a crash, but not after a normal quit
             "ProcessType": "Interactive",
             "LimitLoadToSessionType": "Aqua",
             "AssociatedBundleIdentifiers": [Bundle.main.bundleIdentifier ?? label],
@@ -533,7 +532,7 @@ enum LoginItem {
     static func disable() { try? FileManager.default.removeItem(at: Paths.launchAgent) }
 }
 
-// MARK: - Uygulama
+// MARK: - Application
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -578,9 +577,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loadState()
         lastRealActivity = Date().addingTimeInterval(-Nudger.idleSeconds)
 
-        // App Nap zamanlayıcıyı yavaşlatmasın
+        // Prevent App Nap from throttling the timer.
         activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
-                                                         reason: "Slack Wake Lock zamanlayıcısı")
+                                                         reason: "Slack Wake Lock timer")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
@@ -590,7 +589,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         prayer.onUpdate = { [weak self] in self?.tick() }
         temporaryLock.onUnlock = { [weak self] in
-            Log.write("Geçici ekran kilidi açıldı; normal plana dönülüyor")
+            Log.write("Temporary lock dismissed; returning to the normal schedule")
             self?.tick()
         }
         if config.friday.enabled { prayer.prefetch(Date(), config.friday) }
@@ -608,7 +607,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ws.addObserver(self, selector: #selector(tick), name: NSWorkspace.screensDidWakeNotification, object: nil)
         ws.addObserver(self, selector: #selector(tick), name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
 
-        Log.write("Slack Wake Lock başladı")
+        Log.write("Slack Wake Lock started")
         tick()
     }
 
@@ -617,29 +616,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         power.set(system: false, display: false)
     }
 
-    // MARK: Ana döngü (15 saniyede bir)
+    // MARK: Main loop (every 15 seconds)
 
     @objc private func tick() {
         reloadConfigIfChanged()
         let now = Date()
 
-        // İzin uygulama çalışırken verildiyse, fare olaylarının kesin çalışması için kendini yeniden başlat
+        // Relaunch after a new permission grant so event posting picks it up.
         if !hadPermissionAtLaunch && Nudger.hasPermission && !temporaryLock.isLocked {
             relaunch()
             return
         }
 
         let warnings = [
-            Nudger.hasPermission ? nil : "Erişilebilirlik izni yok",
-            Slack.isInstalled ? nil : "Slack masaüstü uygulaması bulunamadı",
+            Nudger.hasPermission ? nil : "Accessibility permission is missing",
+            Slack.isInstalled ? nil : "Slack desktop app was not found",
             Config.lastError,
         ].compactMap { $0 }.joined(separator: ", ")
         if warnings != lastWarnings {
-            Log.write(warnings.isEmpty ? "Uyarı yok, her şey hazır" : "UYARI: \(warnings)")
+            Log.write(warnings.isEmpty ? "No warnings; everything is ready" : "WARNING: \(warnings)")
             lastWarnings = warnings
         }
 
-        // Gerçek kullanıcı hareketini bizim sanal hareketlerimizden ayır
+        // Distinguish real user activity from our synthetic movements.
         let idle = Nudger.idleSeconds
         let lastInput = now.addingTimeInterval(-idle)
         if lastInput.timeIntervalSince(nudger.lastNudgeAt ?? .distantPast) > 1.5, lastInput > lastRealActivity {
@@ -649,7 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let p = pausedUntil, p <= now {
             pausedUntil = nil
             saveState()
-            Log.write("Duraklatma süresi doldu, devam ediliyor")
+            Log.write("Pause expired; resuming")
         }
 
         let s = snapshot(now)
@@ -669,7 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let status = statusText(s)
         if status != lastStatus {
-            Log.write("Durum: \(status)")
+            Log.write("Status: \(status)")
             lastStatus = status
         }
         updateIcon(s)
@@ -680,7 +679,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let plan = DayPlan(date: now, config: config, prayer: prayer)
         let phase = plan.phase(at: minutesSinceMidnight(now))
 
-        // Mesai dışı (iş günü): sen gerçekten bilgisayardaysan, son hareketinden sonra bir süre daha çevrimiçi tut
+        // Outside work hours on a workday, allow a grace period after real input.
         var overtime = false
         if plan.isWorkday && config.afterHoursGraceMinutes > 0 {
             let dayStart = Calendar.current.startOfDay(for: now)
@@ -697,27 +696,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func statusText(_ s: Snapshot) -> String {
-        if s.temporarilyLocked { return "🔒  Geçici ekran kilidi açık; çevrimiçi tutma etkin" }
+        if s.temporarilyLocked { return "🔒  Temporary screen lock is on; keep awake is active" }
         if let p = pausedUntil {
-            if p == .distantFuture { return "⏸  Duraklatıldı (sen devam ettirene kadar)" }
+            if p == .distantFuture { return "⏸  Paused until you resume" }
             let when = Calendar.current.isDateInToday(p) ? Fmt.hm.string(from: p)
-                     : Calendar.current.isDateInTomorrow(p) ? "yarın \(Fmt.hm.string(from: p))"
+                     : Calendar.current.isDateInTomorrow(p) ? "tomorrow at \(Fmt.hm.string(from: p))"
                      : Fmt.shortDay.string(from: p)
-            return "⏸  Duraklatıldı (bitiş: \(when))"
+            return "⏸  Paused until \(when)"
         }
         switch s.phase {
         case .working(let until):
-            return "🟢  Çevrimiçi tutuluyor (bitiş \(hm(until)))"
+            return "🟢  Keeping awake until \(hm(until))"
         case .windingDown(let next, let at):
-            return "⏳  \(hm(at)) \(next): Slack seni birazdan kendiliğinden uzakta gösterecek"
+            return "⏳  \(hm(at)) \(next): allowing Slack to become away"
         case .onBreak(let label, let until):
-            return "\(label.contains("Cuma") ? "🕌" : "☕️")  \(label) (bitiş \(hm(until))): dokunulmuyor"
+            return "\(label.contains("Friday") ? "🕌" : "☕️")  \(label) until \(hm(until)): mouse nudging is off"
         case .beforeWork:
-            return s.overtime ? "⚡️  Mesai öncesi, çalıştığın için çevrimiçi tutuluyor"
-                              : "🌙  Mesai öncesi (başlangıç \(hm(s.plan.workStart)))"
+            return s.overtime ? "⚡️  Before work: keeping awake while you are active"
+                              : "🌙  Before work (starts at \(hm(s.plan.workStart)))"
         case .afterWork:
-            return s.overtime ? "⚡️  Mesai sonrası, çalıştığın için çevrimiçi tutuluyor"
-                              : "🌙  Mesai bitti"
+            return s.overtime ? "⚡️  After work: keeping awake while you are active"
+                              : "🌙  Workday ended"
         case .offDay(let reason):
             return "🌙  \(reason)"
         }
@@ -733,7 +732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch s.phase {
             case .working: symbol = "bolt.fill"
             case .windingDown: symbol = "hourglass"
-            case .onBreak(let label, _): symbol = label.contains("Cuma") ? "moon.stars" : "cup.and.saucer"
+            case .onBreak(let label, _): symbol = label.contains("Friday") ? "moon.stars" : "cup.and.saucer"
             case .beforeWork, .afterWork, .offDay: symbol = s.overtime ? "bolt" : "moon.zzz"
             }
         }
@@ -753,7 +752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.toolTip = "Slack Wake Lock"
     }
 
-    // MARK: Menü
+    // MARK: Menu
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -761,15 +760,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let s = snapshot(now)
 
         addInfo(menu, statusText(s), bold: true)
-        var idleLine = "Boşta: \(durationText(Int(Nudger.idleSeconds)))"
-        if let t = nudger.lastNudgeAt { idleLine += "  ·  son kıpırdatma \(Fmt.hms.string(from: t))" }
+        var idleLine = "Idle: \(durationText(Int(Nudger.idleSeconds)))"
+        if let t = nudger.lastNudgeAt { idleLine += "  ·  last nudge \(Fmt.hms.string(from: t))" }
         addInfo(menu, idleLine)
 
         menu.addItem(.separator())
-        addAction(menu, "🔒  Geçici ekran kilidini aç", #selector(lockScreen))
-        let slackSound = addAction(menu, "Geçici kilitte Slack için ek uyarı sesi", #selector(toggleLockSlackSound))
+        addAction(menu, "🔒  Open temporary screen lock", #selector(lockScreen))
+        let slackSound = addAction(menu, "Extra Slack alert sound during temporary lock", #selector(toggleLockSlackSound))
         slackSound.state = config.lockScreenSlackSound ? .on : .off
-        addAction(menu, "Slack kilit bildirimi ve sesini test et", #selector(testLockSlackNotification))
+        addAction(menu, "Test Slack lock notification and sound", #selector(testLockSlackNotification))
 
         var warnings = false
         func warningSeparator() {
@@ -777,18 +776,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if !Nudger.hasPermission {
             warningSeparator()
-            addAction(menu, "⚠️  Erişilebilirlik izni gerekli: tıkla ve Slack Wake Lock'u aç…", #selector(openAccessibility))
+            addAction(menu, "⚠️  Accessibility permission required: enable Slack Wake Lock…", #selector(openAccessibility))
         }
         if !Slack.isInstalled {
             warningSeparator()
-            addAction(menu, "⚠️  Slack masaüstü uygulaması yüklü değil: indir…", #selector(openSlackDownload))
+            addAction(menu, "⚠️  Slack desktop app is not installed: download…", #selector(openSlackDownload))
         } else if !Slack.isRunning {
             warningSeparator()
-            addAction(menu, "ℹ️  Slack şu an kapalı: aç", #selector(launchSlack))
+            addAction(menu, "ℹ️  Slack is closed: open", #selector(launchSlack))
         }
         if nudger.lastNudgeWorked == false {
             warningSeparator()
-            addInfo(menu, "⚠️  Son kıpırdatma boşta sayacını sıfırlamadı")
+            addInfo(menu, "⚠️  The last nudge did not reset idle time")
         }
         if let error = Config.lastError {
             warningSeparator()
@@ -796,36 +795,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        addInfo(menu, "Bugün: \(Fmt.pretty.string(from: now))", bold: true)
+        addInfo(menu, "Today: \(Fmt.pretty.string(from: now))", bold: true)
         for line in s.plan.lines(config) { addInfo(menu, line) }
         if s.plan.isWorkday && config.slackAwayAfterMinutes > 0 {
-            addInfo(menu, "Not: Slack \(config.slackAwayAfterMinutes) dk hareketsizlikte uzakta gösterir;")
-            addInfo(menu, "kıpırdatma bu yüzden her molanın \(config.slackAwayAfterMinutes) dk öncesinde biter.")
+            addInfo(menu, "Note: Slack may mark you away after \(config.slackAwayAfterMinutes) min of inactivity;")
+            addInfo(menu, "nudging stops \(config.slackAwayAfterMinutes) min before each break.")
         }
 
         menu.addItem(.separator())
         if pausedUntil != nil {
-            addAction(menu, "▶︎  Devam et", #selector(resume))
+            addAction(menu, "▶︎  Resume", #selector(resume))
         } else {
             let sub = NSMenu()
             sub.autoenablesItems = false
-            addAction(sub, "1 saat", #selector(pauseHour))
-            addAction(sub, "Bugünlük (yarın kendiliğinden başlar)", #selector(pauseToday))
-            addAction(sub, "Ben devam ettirene kadar", #selector(pauseForever))
-            let item = NSMenuItem(title: "⏸  Durdur", action: nil, keyEquivalent: "")
+            addAction(sub, "1 hour", #selector(pauseHour))
+            addAction(sub, "For today (resume tomorrow)", #selector(pauseToday))
+            addAction(sub, "Until I resume", #selector(pauseForever))
+            let item = NSMenuItem(title: "⏸  Pause", action: nil, keyEquivalent: "")
             item.submenu = sub
             menu.addItem(item)
         }
 
         menu.addItem(.separator())
-        addAction(menu, "Cuma ezanı için şehir: \(config.friday.city)…", #selector(changeCity))
-        addAction(menu, "Ayarları düzenle (config.json)…", #selector(openConfig))
-        addAction(menu, "Günlüğü göster", #selector(openLog))
-        let login = addAction(menu, "Mac açılınca otomatik başlat", #selector(toggleLoginItem))
+        addAction(menu, "Friday prayer city: \(config.friday.city)…", #selector(changeCity))
+        addAction(menu, "Edit settings (config.json)…", #selector(openConfig))
+        addAction(menu, "Show log", #selector(openLog))
+        let login = addAction(menu, "Launch at login", #selector(toggleLoginItem))
         login.state = LoginItem.isEnabled ? .on : .off
 
         menu.addItem(.separator())
-        addAction(menu, "Slack Wake Lock'tan çık", #selector(quit), key: "q")
+        addAction(menu, "Quit Slack Wake Lock", #selector(quit), key: "q")
     }
 
     private func addInfo(_ menu: NSMenu, _ title: String, bold: Bool = false) {
@@ -848,16 +847,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
-    // MARK: Menü eylemleri
+    // MARK: Menu actions
 
     @objc private func lockScreen() {
-        // Menü kapandıktan sonra Dock ve menü çubuğunu gizle.
+        // Show the covering windows after the menu closes.
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.temporaryLock.isLocked else { return }
             self.temporaryLock.playSlackSound = self.config.lockScreenSlackSound
             self.temporaryLock.lock()
             guard self.temporaryLock.isLocked else { return }
-            Log.write("Geçici ekran kilidi etkin; kapatılana kadar çevrimiçi tutma açık")
+            Log.write("Temporary screen lock enabled; keep awake remains active until unlocked")
             self.tick()
         }
     }
@@ -892,20 +891,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setPause(_ until: Date?) {
         pausedUntil = until
         saveState()
-        Log.write(until == nil ? "Devam ettirildi" : "Durduruldu")
+        Log.write(until == nil ? "Resumed" : "Paused")
         tick()
     }
 
     @objc private func changeCity() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Cuma ezanı hangi şehre göre hesaplansın?"
-        alert.informativeText = "Şehir adını Türkçe karakter kullanmadan yaz (ör. Istanbul, Ankara, Izmir, Bursa). Vakitler Diyanet yöntemiyle aladhan.com'dan alınır."
+        alert.messageText = "Which city should be used for Friday prayer times?"
+        alert.informativeText = "Enter a city name using Latin characters (e.g. Istanbul, Ankara, Izmir, Bursa). Times are fetched from aladhan.com using the Diyanet calculation method. Country and method can be changed in config.json."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = config.friday.city
         alert.accessoryView = field
-        alert.addButton(withTitle: "Kaydet")
-        alert.addButton(withTitle: "Vazgeç")
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let city = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -913,7 +912,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         config.friday.city = city
         config.save()
         configModified = configFileDate()
-        Log.write("Cuma şehri değişti: \(city)")
+        Log.write("Friday prayer city changed: \(city)")
         if config.friday.enabled { prayer.prefetch(Date(), config.friday) }
         tick()
     }
@@ -928,7 +927,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openLog() {
-        Log.write("Günlük açıldı")
+        Log.write("Log opened")
         let console = URL(fileURLWithPath: "/System/Applications/Utilities/Console.app")
         NSWorkspace.shared.open([Paths.log], withApplicationAt: console, configuration: NSWorkspace.OpenConfiguration())
     }
@@ -949,23 +948,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleLoginItem() {
         if LoginItem.isEnabled {
             LoginItem.disable()
-            Log.write("Otomatik başlatma kapatıldı")
+            Log.write("Launch at login disabled")
         } else {
             LoginItem.enable()
-            Log.write("Otomatik başlatma açıldı")
+            Log.write("Launch at login enabled")
         }
     }
 
     @objc private func quit() {
-        Log.write("Slack Wake Lock kapatıldı")
+        Log.write("Slack Wake Lock stopped")
         NSApp.terminate(nil)
     }
 
     private func relaunch() {
-        Log.write("Erişilebilirlik izni verildi; Slack Wake Lock yeniden başlatılıyor")
+        Log.write("Accessibility permission granted; restarting Slack Wake Lock")
         power.set(system: false, display: false)
         if ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == LoginItem.label {
-            exit(75)   // otomatik başlatma (launchd) ile çalışıyoruz: hata koduyla çıkınca launchd yeniden açar
+            exit(75)   // running under launchd: a nonzero exit triggers a restart
         }
         let shell = Process()
         shell.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -974,7 +973,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         exit(0)
     }
 
-    // MARK: Kalıcı durum
+    // MARK: Persistent state
 
     private func configFileDate() -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: Paths.config.path))?[.modificationDate] as? Date
@@ -985,7 +984,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard modified != configModified else { return }
         configModified = modified
         config = Config.load()
-        if Config.lastError == nil { Log.write("Ayarlar yeniden yüklendi") }
+        if Config.lastError == nil { Log.write("Settings reloaded") }
     }
 
     private func loadState() {
@@ -1005,7 +1004,7 @@ extension NSFont {
     }
 }
 
-// MARK: - Komut satırı: planı yazdır (Wakelock --plan [yyyy-MM-dd])
+// MARK: - Command line: print the schedule (Wakelock --plan [yyyy-MM-dd])
 
 func printPlan(_ dateArgument: String?) {
     let date = dateArgument.flatMap { Fmt.day.date(from: $0) } ?? Date()
@@ -1017,7 +1016,7 @@ func printPlan(_ dateArgument: String?) {
         var fetched: [String: String]?
         PrayerTimes.download(year: c.year!, month: c.month!, config.friday) { days, error in
             fetched = days
-            if let error { print("(ezan vakti indirilemedi: \(error))") }
+            if let error { print("(could not download prayer time: \(error))") }
             done.signal()
         }
         _ = done.wait(timeout: .now() + 25)
@@ -1026,16 +1025,16 @@ func printPlan(_ dateArgument: String?) {
     let plan = DayPlan(date: date, config: config, prayer: prayer)
     print("Plan: \(Fmt.pretty.string(from: date))")
     for line in plan.lines(config) { print("  " + line) }
-    print("\nZaman çizelgesi (5 dk aralıklarla, yalnızca değişimler):")
+    print("\nTimeline (5-minute intervals, changes only):")
     var previous = ""
     for m in stride(from: 0, to: 24 * 60, by: 5) {
         let text: String
         switch plan.phase(at: m) {
-        case .working(let until): text = "KIPIRDAT (\(hm(until))'a kadar)"
-        case .windingDown(let next, let at): text = "bekle: \(hm(at)) \(next)"
-        case .onBreak(let label, let until): text = "MOLA: \(label) (\(hm(until)))"
-        case .beforeWork: text = "mesai öncesi"
-        case .afterWork: text = "mesai sonrası"
+        case .working(let until): text = "NUDGE (until \(hm(until)))"
+        case .windingDown(let next, let at): text = "wait: \(hm(at)) \(next)"
+        case .onBreak(let label, let until): text = "BREAK: \(label) (until \(hm(until)))"
+        case .beforeWork: text = "before work"
+        case .afterWork: text = "after work"
         case .offDay(let reason): text = reason
         }
         if text != previous {
@@ -1045,7 +1044,7 @@ func printPlan(_ dateArgument: String?) {
     }
 }
 
-// MARK: - Giriş noktası
+// MARK: - Entry point
 
 let arguments = CommandLine.arguments
 if arguments.contains("--version") {

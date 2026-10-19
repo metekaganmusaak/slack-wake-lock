@@ -1,7 +1,7 @@
 import AppKit
 import IOKit.ps
 
-/// Oturumu kilitlemeden masaüstünü örter. Durum yalnızca bellekte tutulur.
+/// Covers the desktop without locking the session; state stays in memory.
 @MainActor
 final class TemporaryLockController: NSObject {
     private(set) var isLocked = false
@@ -17,7 +17,7 @@ final class TemporaryLockController: NSObject {
     private let dimming: LockDimmingController
     private let shortcuts = LockShortcutGuard()
     private let slackNotifications = SlackNotificationMonitor()
-    private var slackStatus = "Slack bildirimleri bekleniyor"
+    private var slackStatus = "Waiting for Slack notifications"
     private var slackPreviews: [SlackNotificationPreview] = []
 
     init(dimming: LockDimmingController? = nil) {
@@ -40,13 +40,13 @@ final class TemporaryLockController: NSObject {
         previousPresentation = NSApp.presentationOptions
         isLocked = true
         NSApp.activate(ignoringOtherApps: true)
-        // Kiosk/sunum modu bildirim teslimini etkileyebilir. Masaüstünü yalnızca
-        // normal bir pencereyle ört; Dock/menü çubuğu bu pencerenin altında kalır.
+        // Kiosk presentation mode can affect notification delivery. Cover the desktop
+        // with a regular window; the Dock and menu bar remain underneath it.
         NSApp.presentationOptions = []
         shortcuts.start()
 
-        // Uygulamanın kapanması/gizlenmesi için kullanılan normal kısayolları yut.
-        // Sistem kilidi ve zorla çıkış gibi macOS güvenlik mekanizmaları korunur.
+        // Intercept normal shortcuts that close or hide the app.
+        // Preserve macOS system locking and Force Quit.
         let inputEvents: NSEvent.EventTypeMask = [.keyDown, .mouseMoved, .leftMouseDown, .rightMouseDown,
             .otherMouseDown, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel]
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: inputEvents) { [weak self] event in
@@ -85,7 +85,7 @@ final class TemporaryLockController: NSObject {
         clockTimer = timer
     }
 
-    /// Yalnızca uygulama kapanırken kullanılır; yeniden açılışta kilit geri yüklenmez.
+    /// Used during teardown; the lock is never restored after relaunch.
     func tearDown() {
         guard isLocked else { return }
         isLocked = false
@@ -94,7 +94,7 @@ final class TemporaryLockController: NSObject {
         dimming.stop()
         shortcuts.stop()
         slackNotifications.stop()
-        slackStatus = "Slack bildirimleri bekleniyor"
+        slackStatus = "Waiting for Slack notifications"
         slackPreviews.removeAll()
         if let powerSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSource, .commonModes) }
         powerSource = nil
@@ -123,7 +123,7 @@ final class TemporaryLockController: NSObject {
         guard isLocked else { return }
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return }
-        // Yeni ekranlar kaplanana kadar eski pencereler görünür kalır.
+        // Keep the old windows visible until the new ones cover every display.
         let oldWindows = windows
         windows = screens.map { screen in
             let window = TemporaryLockWindow(screen: screen)
@@ -149,7 +149,7 @@ final class TemporaryLockController: NSObject {
         guard isLocked else { return }
         for window in windows { window.orderFrontRegardless() }
         NSApp.activate(ignoringOtherApps: true)
-        // İmlecin bulunduğu monitörde şifre girişi hazır olsun.
+        // Focus PIN entry on the display containing the pointer.
         let window = windows.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? windows.first
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(window?.lockView.passwordField)
@@ -192,7 +192,7 @@ final class TemporaryLockController: NSObject {
         lock()
         guard isLocked else { return }
         slackNotifications.consume([SlackNotificationPreview(sourceID: UUID().uuidString,
-            title: "Slack Wake Lock · Yerel bildirim testi", body: "Slack önizleme alanı ve ek uyarı sesi testi. Gerçek bir Slack mesajı gönderilmedi.", receivedAt: Date())])
+            title: "Slack Wake Lock · Local notification test", body: "Testing the Slack preview panel and extra alert sound. No actual Slack message was sent.", receivedAt: Date())])
     }
 }
 
@@ -207,8 +207,8 @@ final class TemporaryLockWindow: NSWindow {
         isRestorable = false
         isOpaque = true
         backgroundColor = .black
-        // Üstteki kaplama diğer uygulamaları örter; bildirimleri susturan kiosk
-        // ayarları kullanılmaz. Slack banner'ları bu pencerenin içinde gösterilir.
+        // Cover other apps without kiosk options that can silence notifications.
+        // Slack banner previews are displayed inside this window.
         level = .screenSaver
         collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         animationBehavior = .none
@@ -242,20 +242,20 @@ final class TemporaryLockView: NSView {
 
         timeLabel.font = .systemFont(ofSize: 76, weight: .thin)
         dateLabel.font = .systemFont(ofSize: 18, weight: .medium)
-        let icon = NSImageView(image: NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Kilitli")!)
+        let icon = NSImageView(image: NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Locked")!)
         icon.contentTintColor = .white
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.widthAnchor.constraint(equalToConstant: 32).isActive = true
         icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
-        let title = NSTextField(labelWithString: "Ekran kilitli")
+        let title = NSTextField(labelWithString: "Screen locked")
         title.font = .systemFont(ofSize: 24, weight: .semibold)
-        let hint = NSTextField(labelWithString: "Devam etmek için şifreni gir.")
+        let hint = NSTextField(labelWithString: "Enter your PIN to continue.")
         hint.font = .systemFont(ofSize: 14)
         hint.textColor = .secondaryLabelColor
 
-        passwordField.placeholderString = "Şifre"
-        passwordField.setAccessibilityLabel("Geçici ekran kilidi şifresi")
+        passwordField.placeholderString = "PIN"
+        passwordField.setAccessibilityLabel("Temporary screen lock PIN")
         passwordField.font = .systemFont(ofSize: 20)
         passwordField.alignment = .center
         passwordField.bezelStyle = .roundedBezel
@@ -266,11 +266,11 @@ final class TemporaryLockView: NSView {
         passwordField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         passwordField.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
-        let button = NSButton(title: "Kilidi aç", target: self, action: #selector(unlock))
+        let button = NSButton(title: "Unlock", target: self, action: #selector(unlock))
         button.bezelStyle = .rounded
         errorLabel.font = .systemFont(ofSize: 13)
         errorLabel.textColor = .systemRed
-        let footer = NSTextField(labelWithString: "Slack Wake Lock · Geçici ekran kilidi")
+        let footer = NSTextField(labelWithString: "Slack Wake Lock · Temporary screen lock")
         footer.font = .systemFont(ofSize: 12)
         footer.textColor = .secondaryLabelColor
 
@@ -309,7 +309,7 @@ final class TemporaryLockView: NSView {
         ])
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) desteklenmiyor") }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func updateClock(_ date: Date) {
         timeLabel.stringValue = Fmt.hm.string(from: date)
@@ -363,7 +363,7 @@ final class TemporaryLockView: NSView {
         let password = passwordField.stringValue
         clearPassword()
         if onSubmit?(password) != true {
-            errorLabel.stringValue = "Şifre yanlış. Tekrar dene."
+            errorLabel.stringValue = "Incorrect PIN. Try again."
             window?.makeFirstResponder(passwordField)
             NSSound.beep()
         }

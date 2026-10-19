@@ -1,8 +1,8 @@
 import AppKit
 import ApplicationServices
 
-/// Kiosk sunum moduna girmeden uygulama değiştirme kısayollarını engeller.
-/// Yalnızca kilit sırasında çalışır; yazılan metni okumaz veya kaydetmez.
+/// Blocks app-switch shortcuts without entering kiosk presentation mode.
+/// Runs only during the lock; does not read or store typed text.
 @MainActor
 final class LockShortcutGuard {
     private var tap: CFMachPort?
@@ -11,7 +11,7 @@ final class LockShortcutGuard {
     nonisolated static func blocks(_ event: CGEvent) -> Bool {
         guard event.flags.contains(.maskCommand) else { return false }
         let key = event.getIntegerValueField(.keyboardEventKeycode)
-        return key == 48 || key == 50 || key == 49 // Cmd-Tab / Cmd-` / Spotlight (Shift çeşitleri dahil)
+        return key == 48 || key == 50 || key == 49 // Cmd-Tab / Cmd-` / Spotlight (including Shift variants)
     }
 
     func start() {
@@ -30,7 +30,7 @@ final class LockShortcutGuard {
                 return LockShortcutGuard.blocks(event) ? nil : Unmanaged.passUnretained(event)
             }, userInfo: Unmanaged.passUnretained(self).toOpaque())
         guard let tap else {
-            Log.write("Geçici kilit: uygulama değiştirme kısayolu denetimi başlatılamadı")
+            Log.write("Temporary lock: could not start app-switch shortcut guard")
             return
         }
         source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)

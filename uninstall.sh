@@ -1,5 +1,5 @@
 #!/bin/bash
-# Slack Wake Lock'u tamamen kaldırır. Ayarları da silmek için: ./uninstall.sh --all
+# Remove Slack Wake Lock. To also remove settings: ./uninstall.sh --all
 set -uo pipefail
 
 LABEL="local.wakelock"
@@ -17,7 +17,7 @@ defaults delete com.tinyspeck.slackmacgap NSAppSleepDisabled 2>/dev/null
 
 if [ "${1:-}" = "--all" ]; then
   rm -rf "$HOME/Library/Application Support/Wakelock" "$HOME/Library/Logs/Wakelock.log"
-  echo "Slack Wake Lock ve ayarları kaldırıldı."
+  echo "Slack Wake Lock and its settings have been removed."
 else
-  echo "Slack Wake Lock kaldırıldı. (Ayarlar duruyor: ~/Library/Application Support/Wakelock — silmek için ./uninstall.sh --all)"
+  echo "Slack Wake Lock has been removed. (Settings remain in ~/Library/Application Support/Wakelock — run ./uninstall.sh --all to remove them.)"
 fi

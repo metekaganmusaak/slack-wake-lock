@@ -1,50 +1,57 @@
-# Gizlilik ve public paylaşım
+# Privacy and public distribution
 
-## Pakette bulunmayan veriler
+## Data excluded from the packages
 
-Kaynak ve release ZIP'leri açık bir dosya listesiyle oluşturulur. Kullanıcı
-ayarları, günlükler, duraklatma durumu, namaz vakti önbelleği, Slack oturumu,
-mesaj geçmişi, Git geçmişi, iş e-postası, sertifika ve API anahtarları pakete
-alınmaz. Dosyalar mevcut kullanıcı dizini üzerinden belirlenir; belirli bir
-Mac'e ait mutlak kullanıcı yolu kaynakta tanımlı değildir.
+Source and release ZIPs are built from an explicit file allowlist. User
+settings, logs, pause state, prayer-time cache, Slack sessions, message
+history, Git history, work email addresses, certificates, and API keys are
+not included. Paths are resolved from the current user's home directory;
+no particular Mac's absolute user path is hardcoded in the source.
 
-## Kullanıcıya özel dosyalar
+## User-specific files
 
-Önceki Wakelock sürümündeki ayarları korumak için veri yolları ve
-`local.wakelock` uygulama kimliği değişmez; görünen ad Slack Wake Lock'tur.
+The data paths and `local.wakelock` bundle identifier are retained for
+compatibility with earlier Wakelock versions. The app's display name is
+Slack Wake Lock.
 
-- `~/Library/Application Support/Wakelock/config.json`: çalışma saatleri ve tercihler.
-- Aynı dizindeki `state.json` ve `prayer-cache.json`: duraklatma ve isteğe bağlı vakit önbelleği.
-- `~/Library/Logs/Wakelock.log`: uygulama durumu, izin hataları, kıpırdatma ve bildirim adetleri.
-- `~/Library/LaunchAgents/local.wakelock.plist`: otomatik başlatma seçilirse uygulama yolu.
+- `~/Library/Application Support/Wakelock/config.json`: work hours and preferences.
+- `state.json` and `prayer-cache.json` in the same folder: pause state and optional prayer-time cache.
+- `~/Library/Logs/Wakelock.log`: app state, permission errors, nudge status, and notification counts.
+- `~/Library/LaunchAgents/local.wakelock.plist`: app path for launch at login, when enabled.
 
-Bu dosyalar kullanıcının kendi Mac'inde oluşturulur. Hata bildirimi açarken
-günlükleri paylaşmadan önce gözden geçir: çalışma saatleri ve seçilen şehir
-günlüklere yansıyabilir.
+These files are created on the user's own Mac. Review logs before attaching
+them to an issue: they can include work hours, the selected city, or local
+paths in system error messages.
 
-## Slack ve izinler
+## Slack and permissions
 
-Slack token'ı, parolası veya çerezi okunmaz; Slack API'sine bağlanılmaz.
-Erişilebilirlik izni sanal fare hareketi, geçici kilit sırasında kısayol
-denetimi ve yalnızca Slack banner önizlemelerini okumak için kullanılır.
-Gönderen ve mesaj önizlemeleri bellekte tutulur, günlüğe yazılmaz ve kilit
-açıldığında temizlenir. Bu önizlemeler şifre girmeden görülebilir.
+The app does not read Slack tokens, passwords, or cookies, and does not
+connect to the Slack API. Accessibility permission is used to post synthetic
+mouse movements, intercept app-switch shortcuts during the temporary lock,
+and read Slack notification banner previews.
 
-Geçici ekranın varsayılan PIN'i **123456**'dır ve kaynak kodda açıktır. Bu,
-macOS hesabının parolası değildir. Geçici ekran gerçek güvenli ekran kilidi
-yerine kullanılmamalıdır.
+Sender names and message previews are kept only in memory, are not written
+to logs, and are cleared when the temporary lock is dismissed. Previews are
+visible without entering the PIN. Actual message contents are displayed as
+received, without translation.
 
-## Ağ bağlantıları
+The temporary screen's fixed PIN is **123456**, visible in the source code.
+It is not your macOS account password. This overlay does not replace the
+secure macOS lock screen.
 
-Slack Wake Lock telemetri ve analitik servisi içermez. Cuma vakti özelliği yeni
-kurulumlarda kapalıdır. Açılırsa seçilen şehir, ülke ve hesaplama yöntemiyle
-`https://api.aladhan.com` adresinden vakitler alınır; bu servis bağlantının
-IP adresini de görebilir. Mevcut kullanıcıların config.json tercihleri korunur.
-İndirme/ayar menülerindeki bağlantılar yalnızca kullanıcı seçerse açılır.
+## Network requests
 
-## Derleme ve dağıtım
+Slack Wake Lock contains no telemetry or analytics service. The Friday
+prayer feature is disabled on new installations. If enabled, it requests
+prayer times from `https://api.aladhan.com` using the selected city, country,
+and calculation method. That service can also see the connection's IP
+address. Existing preferences in config.json are preserved.
 
-Release Apple Developer/kurum sertifikası kullanmadan ad hoc imzalanır; bir
-kurumun imza kimliği pakete eklenmez. Derlemede kaynak dizini yolları
-`-file-prefix-map` ile genelleştirilir. Arşivler macOS kaynak çatalları ve
-genişletilmiş dosya öznitelikleri taşınmadan hazırlanır.
+Download and settings links open only when the user selects them.
+
+## Build and distribution
+
+Releases are ad hoc signed without an Apple Developer or organization
+certificate; no organization's signing identity is included. Source paths
+are generalized with `-file-prefix-map`. Packages are created without macOS
+resource forks or extended file attributes.
