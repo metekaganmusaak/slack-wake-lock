@@ -4,6 +4,7 @@ import IOKit.ps
 @MainActor
 enum TemporaryLockTests {
     static func run() {
+        L10n.select("en")
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.finishLaunching()
@@ -89,6 +90,7 @@ enum TemporaryLockTests {
         testBatteryAndDimming()
         testSlackNotifications()
         testShortcutGuard()
+        LocalizationTests.run()
         if ProcessInfo.processInfo.environment["WAKELOCK_TEST_HARDWARE"] == "1" {
             testPhysicalBrightness()
         }
@@ -279,7 +281,8 @@ extension AppDelegate {
     static func testEnglishInterface() {
         let date = Fmt.stamp.date(from: "2026-10-19 10:00:00")!
         precondition(Fmt.pretty.string(from: date) == "Monday, October 19")
-        precondition(Fmt.shortDay.string(from: date) == "Oct 19, 10:00")
+        precondition(Fmt.shortDay.string(from: date).contains("Oct 19"))
+        precondition(Fmt.shortDay.string(from: date).contains("10:00"))
         precondition(durationText(65) == "1 min 5 s")
         precondition(durationText(3660) == "1 h 1 min")
 

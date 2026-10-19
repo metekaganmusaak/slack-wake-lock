@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Verify archives and prebuilt installation without installing into the user account."""
 import hashlib
+import json
+from collections import Counter
 import plistlib
 import re
 import subprocess
@@ -15,6 +17,17 @@ release_name = f"Slack-Wake-Lock-{version}-macos-universal"
 source_name = f"Slack-Wake-Lock-{version}-source"
 release_zip = dist / f"{release_name}.zip"
 source_zip = dist / f"{source_name}.zip"
+language_codes = {"en", "tr", "es", "it", "fr", "de", "ru", "uk", "hi", "zh", "ja", "ko", "pt", "nb", "da", "sv"}
+catalog = json.loads((project / "Assets/Localizations.json").read_text())
+assert set(catalog) == language_codes
+for code, table in catalog.items():
+    assert set(table) == set(catalog["en"]), f"Missing translation keys: {code}"
+    for key, value in table.items():
+        assert value.strip(), f"Empty translation: {code}: {key}"
+        assert Counter(re.findall(r"\{\d+\}", key)) == Counter(re.findall(r"\{\d+\}", value)), f"Invalid placeholders: {code}: {key}"
+for source in (project / "Sources").glob("*.swift"):
+    keys = set(re.findall(r'L10n\.text\("([^"\n]*)"', source.read_text()))
+    assert keys <= catalog["en"].keys(), f"Uncatalogued UI strings: {source.name}: {keys - catalog['en'].keys()}"
 forbidden_names = {".git", "__MACOSX", ".DS_Store", "config.json", "state.json", "prayer-cache.json", "xcuserdata"}
 private_path = b"/" + b"Users" + b"/"
 credentials = re.compile(rb"\b(?:xox[baprs]-[A-Za-z0-9-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,})")
@@ -65,7 +78,8 @@ with tempfile.TemporaryDirectory(prefix="wakelock-package-check-") as temporary:
     assert info["CFBundleIdentifier"] == "local.wakelock"
     assert info["CFBundleName"] == info["CFBundleDisplayName"] == "Slack Wake Lock"
     assert info["CFBundleDevelopmentRegion"] == "en"
-    assert info["CFBundleLocalizations"] == ["en"]
+    assert set(info["CFBundleLocalizations"]) == language_codes
+    assert json.loads((app / "Contents/Resources/Localizations.json").read_text()) == catalog
     assert (app / "Contents/Resources" / info["CFBundleIconFile"]).is_file()
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
     subprocess.run(["lipo", str(executable), "-verify_arch", "arm64", "x86_64"], check=True)

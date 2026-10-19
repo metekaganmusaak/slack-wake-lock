@@ -30,8 +30,16 @@ enum Fmt {
     static let day = make("yyyy-MM-dd")
     static let hm = make("HH:mm")
     static let hms = make("HH:mm:ss")
-    static let pretty = make("EEEE, MMMM d", "en_US_POSIX")
-    static let shortDay = make("MMM d, HH:mm", "en_US_POSIX")
+    static var pretty: DateFormatter { localized("EEEEMMMMd") }
+    static var shortDay: DateFormatter { localized("MMMdHHmm") }
+
+    private static func localized(_ template: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = L10n.locale
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter
+    }
 }
 
 /// "08:45" -> 525 (minutes since midnight)
@@ -53,9 +61,9 @@ func minutesSinceMidnight(_ date: Date) -> Int {
 }
 
 func durationText(_ seconds: Int) -> String {
-    if seconds < 60 { return "\(seconds) s" }
-    if seconds < 3600 { return "\(seconds / 60) min \(seconds % 60) s" }
-    return "\(seconds / 3600) h \((seconds % 3600) / 60) min"
+    if seconds < 60 { return L10n.text("{0} s", seconds) }
+    if seconds < 3600 { return L10n.text("{0} min {1} s", seconds / 60, seconds % 60) }
+    return L10n.text("{0} h {1} min", seconds / 3600, (seconds % 3600) / 60)
 }
 
 enum Log {
@@ -86,7 +94,7 @@ struct Config: Codable {
 
         // Keep existing config files intact while translating the former default label.
         var displayName: String {
-            name == "\u{00D6}\u{011F}le molas\u{0131}" ? "Lunch break" : name
+            ["Lunch break", "\u{00D6}\u{011F}le molas\u{0131}"].contains(name) ? L10n.text("Lunch break") : name
         }
     }
 
@@ -112,6 +120,7 @@ struct Config: Codable {
     var keepDisplayAwakeDuringBreaks = true
     var launchSlackIfClosed = true
     var lockScreenSlackSound = true
+    var language = "system"
 
     static var lastError: String?
 
@@ -123,10 +132,7 @@ struct Config: Codable {
             return defaults
         }
         do {
-            let user = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-            let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(defaults)) as? [String: Any] ?? [:]
-            let merged = try JSONSerialization.data(withJSONObject: merge(base, user))
-            let config = try JSONDecoder().decode(Config.self, from: merged)
+            let config = try decode(data)
             lastError = nil
             return config
         } catch {
@@ -134,6 +140,13 @@ struct Config: Codable {
             Log.write("\(lastError!): \(error)")
             return defaults
         }
+    }
+
+    static func decode(_ data: Data) throws -> Config {
+        let user = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(Config())) as? [String: Any] ?? [:]
+        let merged = try JSONSerialization.data(withJSONObject: merge(base, user))
+        return try JSONDecoder().decode(Config.self, from: merged)
     }
 
     private static func merge(_ a: [String: Any], _ b: [String: Any]) -> [String: Any] {
@@ -285,6 +298,7 @@ struct DayPlan {
         var label: String
         var start: Int
         var end: Int
+        var isPrayer = false
     }
 
     enum Phase {
@@ -293,7 +307,7 @@ struct DayPlan {
         case afterWork
         case working(until: Int)                // keep awake is active
         case windingDown(next: String, at: Int) // stop nudging ahead of a break or the end of work
-        case onBreak(String, until: Int)
+        case onBreak(String, until: Int, isPrayer: Bool)
 
         var isWorking: Bool {
             if case .working = self { return true }
@@ -334,9 +348,9 @@ struct DayPlan {
             let d = prayer.dhuhr(on: date, config.friday)
             ezan = d.minutes
             ezanApproximate = d.approximate
-            raw.append(Block(label: "Friday prayer",
+            raw.append(Block(label: L10n.text("Friday prayer"),
                              start: d.minutes - config.friday.minutesBeforeEzan,
-                             end: d.minutes + config.friday.minutesAfterEzan))
+                             end: d.minutes + config.friday.minutesAfterEzan, isPrayer: true))
         } else {
             ezan = nil
             ezanApproximate = false
@@ -348,6 +362,7 @@ struct DayPlan {
             if var last = merged.last, b.start <= last.end {
                 last.end = max(last.end, b.end)
                 last.label += " + " + b.label
+                last.isPrayer = last.isPrayer || b.isPrayer
                 merged[merged.count - 1] = last
             } else {
                 merged.append(b)
@@ -377,7 +392,7 @@ struct DayPlan {
         if m < workStart { return .beforeWork }
         if m >= workEnd { return .afterWork }
         if let b = breaks.first(where: { m >= $0.start && m < $0.end }) {
-            return .onBreak(b.label, until: min(b.end, workEnd))
+            return .onBreak(b.label, until: min(b.end, workEnd), isPrayer: b.isPrayer)
         }
         if let n = nudge.first(where: { m >= $0.start && m < $0.end }) {
             return .working(until: n.end)
@@ -385,22 +400,22 @@ struct DayPlan {
         if let next = breaks.first(where: { $0.start > m && $0.start < workEnd }) {
             return .windingDown(next: next.label, at: next.start)
         }
-        return .windingDown(next: "End of workday", at: workEnd)
+        return .windingDown(next: L10n.text("End of workday"), at: workEnd)
     }
 
     func lines(_ config: Config) -> [String] {
-        guard isWorkday else { return ["\(offReason): Slack Wake Lock is inactive today"] }
-        var items: [(Int, String)] = nudge.map { ($0.start, "🟢  \(hm($0.start))–\(hm($0.end))   keep awake") }
+        guard isWorkday else { return [L10n.text("{0}: Slack Wake Lock is inactive today", L10n.text(offReason))] }
+        var items: [(Int, String)] = nudge.map { ($0.start, "🟢  \(hm($0.start))–\(hm($0.end))   " + L10n.text("Keep awake")) }
         for b in breaks where b.end > workStart && b.start < workEnd {
-            let icon = b.label.contains("Friday") ? "🕌" : "☕️"
+            let icon = b.isPrayer ? "🕌" : "☕️"
             items.append((b.start, "\(icon)  \(hm(b.start))–\(hm(b.end))   \(b.label)"))
         }
         var out = items.sorted { $0.0 < $1.0 }.map { $0.1 }
         if let ezan {
-            out.append("🕌  Friday prayer time (\(config.friday.city)): \(hm(ezan))\(ezanApproximate ? " (estimated, waiting for internet)" : "")")
+            out.append("🕌  " + L10n.text("Friday prayer time ({0}): {1}", config.friday.city, hm(ezan)) + (ezanApproximate ? " " + L10n.text("(estimated, waiting for internet)") : ""))
         }
         if config.afterHoursGraceMinutes > 0 {
-            out.append("🌙  Outside work hours: only while you are active (+\(config.afterHoursGraceMinutes) min after your last input)")
+            out.append("🌙  " + L10n.text("Outside work hours: only while active (+{0} min after your last input)", config.afterHoursGraceMinutes))
         }
         return out
     }
@@ -573,7 +588,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         try? FileManager.default.createDirectory(at: Paths.support, withIntermediateDirectories: true)
         config = Config.load()
+        L10n.select(config.language)
         configModified = configFileDate()
+        NotificationCenter.default.addObserver(self, selector: #selector(systemLanguageChanged),
+            name: NSLocale.currentLocaleDidChangeNotification, object: nil)
         loadState()
         lastRealActivity = Date().addingTimeInterval(-Nudger.idleSeconds)
 
@@ -696,29 +714,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func statusText(_ s: Snapshot) -> String {
-        if s.temporarilyLocked { return "🔒  Temporary screen lock is on; keep awake is active" }
+        if s.temporarilyLocked { return "🔒  " + L10n.text("Temporary screen lock is on; keep awake is active") }
         if let p = pausedUntil {
-            if p == .distantFuture { return "⏸  Paused until you resume" }
+            if p == .distantFuture { return "⏸  " + L10n.text("Paused until you resume") }
             let when = Calendar.current.isDateInToday(p) ? Fmt.hm.string(from: p)
-                     : Calendar.current.isDateInTomorrow(p) ? "tomorrow at \(Fmt.hm.string(from: p))"
+                     : Calendar.current.isDateInTomorrow(p) ? L10n.text("tomorrow at {0}", Fmt.hm.string(from: p))
                      : Fmt.shortDay.string(from: p)
-            return "⏸  Paused until \(when)"
+            return "⏸  " + L10n.text("Paused until {0}", when)
         }
         switch s.phase {
         case .working(let until):
-            return "🟢  Keeping awake until \(hm(until))"
+            return "🟢  " + L10n.text("Keeping awake until {0}", hm(until))
         case .windingDown(let next, let at):
-            return "⏳  \(hm(at)) \(next): allowing Slack to become away"
-        case .onBreak(let label, let until):
-            return "\(label.contains("Friday") ? "🕌" : "☕️")  \(label) until \(hm(until)): mouse nudging is off"
+            return "⏳  " + L10n.text("{0} {1}: allowing Slack to become away", hm(at), next)
+        case .onBreak(let label, let until, let isPrayer):
+            return "\(isPrayer ? "🕌" : "☕️")  " + L10n.text("{0} until {1}: mouse nudging is off", label, hm(until))
         case .beforeWork:
-            return s.overtime ? "⚡️  Before work: keeping awake while you are active"
-                              : "🌙  Before work (starts at \(hm(s.plan.workStart)))"
+            return s.overtime ? "⚡️  " + L10n.text("Before work: keeping awake while you are active")
+                              : "🌙  " + L10n.text("Before work (starts at {0})", hm(s.plan.workStart))
         case .afterWork:
-            return s.overtime ? "⚡️  After work: keeping awake while you are active"
-                              : "🌙  Workday ended"
+            return s.overtime ? "⚡️  " + L10n.text("After work: keeping awake while you are active")
+                              : "🌙  " + L10n.text("Workday ended")
         case .offDay(let reason):
-            return "🌙  \(reason)"
+            return "🌙  " + L10n.text(reason)
         }
     }
 
@@ -732,7 +750,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch s.phase {
             case .working: symbol = "bolt.fill"
             case .windingDown: symbol = "hourglass"
-            case .onBreak(let label, _): symbol = label.contains("Friday") ? "moon.stars" : "cup.and.saucer"
+            case .onBreak(_, _, let isPrayer): symbol = isPrayer ? "moon.stars" : "cup.and.saucer"
             case .beforeWork, .afterWork, .offDay: symbol = s.overtime ? "bolt" : "moon.zzz"
             }
         }
@@ -760,15 +778,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let s = snapshot(now)
 
         addInfo(menu, statusText(s), bold: true)
-        var idleLine = "Idle: \(durationText(Int(Nudger.idleSeconds)))"
-        if let t = nudger.lastNudgeAt { idleLine += "  ·  last nudge \(Fmt.hms.string(from: t))" }
+        var idleLine = L10n.text("Idle: {0}", durationText(Int(Nudger.idleSeconds)))
+        if let t = nudger.lastNudgeAt { idleLine += "  ·  " + L10n.text("last nudge {0}", Fmt.hms.string(from: t)) }
         addInfo(menu, idleLine)
 
         menu.addItem(.separator())
-        addAction(menu, "🔒  Open temporary screen lock", #selector(lockScreen))
-        let slackSound = addAction(menu, "Extra Slack alert sound during temporary lock", #selector(toggleLockSlackSound))
+        addAction(menu, "🔒  " + L10n.text("Open temporary screen lock"), #selector(lockScreen))
+        let slackSound = addAction(menu, L10n.text("Extra Slack alert sound during temporary lock"), #selector(toggleLockSlackSound))
         slackSound.state = config.lockScreenSlackSound ? .on : .off
-        addAction(menu, "Test Slack lock notification and sound", #selector(testLockSlackNotification))
+        addAction(menu, L10n.text("Test Slack lock notification and sound"), #selector(testLockSlackNotification))
 
         var warnings = false
         func warningSeparator() {
@@ -776,55 +794,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if !Nudger.hasPermission {
             warningSeparator()
-            addAction(menu, "⚠️  Accessibility permission required: enable Slack Wake Lock…", #selector(openAccessibility))
+            addAction(menu, "⚠️  " + L10n.text("Accessibility permission required: enable Slack Wake Lock…"), #selector(openAccessibility))
         }
         if !Slack.isInstalled {
             warningSeparator()
-            addAction(menu, "⚠️  Slack desktop app is not installed: download…", #selector(openSlackDownload))
+            addAction(menu, "⚠️  " + L10n.text("Slack desktop app is not installed: download…"), #selector(openSlackDownload))
         } else if !Slack.isRunning {
             warningSeparator()
-            addAction(menu, "ℹ️  Slack is closed: open", #selector(launchSlack))
+            addAction(menu, "ℹ️  " + L10n.text("Slack is closed: open"), #selector(launchSlack))
         }
         if nudger.lastNudgeWorked == false {
             warningSeparator()
-            addInfo(menu, "⚠️  The last nudge did not reset idle time")
+            addInfo(menu, "⚠️  " + L10n.text("The last nudge did not reset idle time"))
         }
         if let error = Config.lastError {
             warningSeparator()
-            addInfo(menu, "⚠️  \(error)")
+            addInfo(menu, "⚠️  " + L10n.text(error))
         }
 
         menu.addItem(.separator())
-        addInfo(menu, "Today: \(Fmt.pretty.string(from: now))", bold: true)
+        addInfo(menu, L10n.text("Today: {0}", Fmt.pretty.string(from: now)), bold: true)
         for line in s.plan.lines(config) { addInfo(menu, line) }
         if s.plan.isWorkday && config.slackAwayAfterMinutes > 0 {
-            addInfo(menu, "Note: Slack may mark you away after \(config.slackAwayAfterMinutes) min of inactivity;")
-            addInfo(menu, "nudging stops \(config.slackAwayAfterMinutes) min before each break.")
+            addInfo(menu, L10n.text("Slack may mark you away after {0} min of inactivity;", config.slackAwayAfterMinutes))
+            addInfo(menu, L10n.text("nudging stops {0} min before each break.", config.slackAwayAfterMinutes))
         }
 
         menu.addItem(.separator())
         if pausedUntil != nil {
-            addAction(menu, "▶︎  Resume", #selector(resume))
+            addAction(menu, "▶︎  " + L10n.text("Resume"), #selector(resume))
         } else {
             let sub = NSMenu()
             sub.autoenablesItems = false
-            addAction(sub, "1 hour", #selector(pauseHour))
-            addAction(sub, "For today (resume tomorrow)", #selector(pauseToday))
-            addAction(sub, "Until I resume", #selector(pauseForever))
-            let item = NSMenuItem(title: "⏸  Pause", action: nil, keyEquivalent: "")
+            addAction(sub, L10n.text("1 hour"), #selector(pauseHour))
+            addAction(sub, L10n.text("For today (resume tomorrow)"), #selector(pauseToday))
+            addAction(sub, L10n.text("Until I resume"), #selector(pauseForever))
+            let item = NSMenuItem(title: "⏸  " + L10n.text("Pause"), action: nil, keyEquivalent: "")
             item.submenu = sub
             menu.addItem(item)
         }
 
         menu.addItem(.separator())
-        addAction(menu, "Friday prayer city: \(config.friday.city)…", #selector(changeCity))
-        addAction(menu, "Edit settings (config.json)…", #selector(openConfig))
-        addAction(menu, "Show log", #selector(openLog))
-        let login = addAction(menu, "Launch at login", #selector(toggleLoginItem))
+        let languageMenu = NSMenu()
+        languageMenu.autoenablesItems = false
+        let automatic = addAction(languageMenu, L10n.text("System default"), #selector(changeLanguage(_:)))
+        automatic.representedObject = "system"
+        automatic.state = L10n.selection == "system" ? .on : .off
+        languageMenu.addItem(.separator())
+        for language in L10n.sortedLanguages {
+            let item = addAction(languageMenu, language.title, #selector(changeLanguage(_:)))
+            item.representedObject = language.code
+            item.state = L10n.selection == language.code ? .on : .off
+        }
+        let languageItem = NSMenuItem(title: "🌐  " + L10n.text("Language"), action: nil, keyEquivalent: "")
+        languageItem.submenu = languageMenu
+        menu.addItem(languageItem)
+        addAction(menu, L10n.text("Friday prayer city: {0}…", config.friday.city), #selector(changeCity))
+        addAction(menu, L10n.text("Edit settings (config.json)…"), #selector(openConfig))
+        addAction(menu, L10n.text("Show log"), #selector(openLog))
+        let login = addAction(menu, L10n.text("Launch at login"), #selector(toggleLoginItem))
         login.state = LoginItem.isEnabled ? .on : .off
 
         menu.addItem(.separator())
-        addAction(menu, "Quit Slack Wake Lock", #selector(quit), key: "q")
+        addAction(menu, L10n.text("Quit Slack Wake Lock"), #selector(quit), key: "q")
     }
 
     private func addInfo(_ menu: NSMenu, _ title: String, bold: Bool = false) {
@@ -895,16 +927,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tick()
     }
 
+    @objc private func changeLanguage(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? String else { return }
+        config.language = L10n.normalized(choice)
+        config.save()
+        configModified = configFileDate()
+        L10n.select(config.language)
+        tick()
+    }
+
+    @objc private func systemLanguageChanged() {
+        L10n.select(config.language)
+        tick()
+    }
+
     @objc private func changeCity() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Which city should be used for Friday prayer times?"
-        alert.informativeText = "Enter a city name using Latin characters (e.g. Istanbul, Ankara, Izmir, Bursa). Times are fetched from aladhan.com using the Diyanet calculation method. Country and method can be changed in config.json."
+        alert.messageText = L10n.text("Which city should be used for Friday prayer times?")
+        alert.informativeText = L10n.text("Enter a city using Latin characters. Prayer times come from aladhan.com (Diyanet method). Change country and method in config.json.")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = config.friday.city
         alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L10n.text("Save"))
+        alert.addButton(withTitle: L10n.text("Cancel"))
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let city = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -984,6 +1030,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard modified != configModified else { return }
         configModified = modified
         config = Config.load()
+        L10n.select(config.language)
         if Config.lastError == nil { Log.write("Settings reloaded") }
     }
 
@@ -1009,6 +1056,7 @@ extension NSFont {
 func printPlan(_ dateArgument: String?) {
     let date = dateArgument.flatMap { Fmt.day.date(from: $0) } ?? Date()
     let config = Config.load()
+    L10n.select(config.language)
     let prayer = PrayerTimes()
     if Calendar.current.component(.weekday, from: date) == 6 && config.friday.enabled {
         let c = Calendar.current.dateComponents([.year, .month], from: date)
@@ -1032,7 +1080,7 @@ func printPlan(_ dateArgument: String?) {
         switch plan.phase(at: m) {
         case .working(let until): text = "NUDGE (until \(hm(until)))"
         case .windingDown(let next, let at): text = "wait: \(hm(at)) \(next)"
-        case .onBreak(let label, let until): text = "BREAK: \(label) (until \(hm(until)))"
+        case .onBreak(let label, let until, _): text = "BREAK: \(label) (until \(hm(until)))"
         case .beforeWork: text = "before work"
         case .afterWork: text = "after work"
         case .offDay(let reason): text = reason

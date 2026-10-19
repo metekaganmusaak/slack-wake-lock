@@ -6,13 +6,13 @@ Keeps your Mac awake on a schedule, refreshes the system idle timer with
 synthetic mouse movements, and provides a temporary PIN screen. Designed for
 use with the Slack desktop app; Slack presence is not guaranteed.
 
-**macOS 13+ · Apple Silicon and Intel · MIT license · English interface**
+**macOS 13+ · Apple Silicon and Intel · MIT license · 16 interface languages**
 
 An independent project, not affiliated with Slack or Salesforce.
 
 ## Download
 
-Download `Slack-Wake-Lock-1.0.0-macos-universal.zip` from this repository's
+Download `Slack-Wake-Lock-1.1.0-macos-universal.zip` from this repository's
 **Releases** page. Extract it, copy `Slack Wake Lock.app` to Applications,
 and grant Accessibility permission. Xcode is not required. For automatic
 installation, run `bash install.sh` in the extracted release folder.
@@ -86,6 +86,27 @@ Building requires Xcode Command Line Tools (`xcode-select --install`).
    A warning symbol in the menu bar indicates missing permission.
 
 You may need to grant Accessibility permission again after rebuilding or updating.
+
+## Interface language
+
+The default is **System default**, which follows your device's preferred
+languages. If none are supported, the interface falls back to English.
+Choose **Language** in the menu bar menu to override it. The selection is
+saved in `config.json` and applied immediately without restarting the app,
+including an already open temporary lock screen.
+
+Supported languages: Chinese (Simplified), Danish, English, French, German,
+Hindi, Italian, Japanese, Korean, Norwegian (Bokmål), Portuguese, Russian,
+Spanish, Swedish, Turkish, and Ukrainian. Language names are sorted
+alphabetically in the current interface language and include their native
+names. The system option stays at the top. Regional preferences such as
+`tr-TR`, `pt-BR`, and `zh-TW` resolve to the corresponding supported language.
+
+Menus, alerts, built-in break labels, lock screen, battery descriptions,
+durations, and dates follow the selection. Custom break names and actual
+Slack messages are displayed unchanged. Translations are bundled locally;
+no translation service or additional network connection is used. Developer
+logs, installation scripts, and project documentation remain in English.
 
 ## Menu bar controls
 
@@ -174,10 +195,11 @@ To print the schedule for a particular day:
 `~/Library/Application Support/Wakelock/config.json`. Changes are reloaded
 within 15 seconds. Existing data paths and configuration keys are retained
 for compatibility. The previous default Turkish lunch label is displayed as
-**Lunch break**; your custom break labels and Slack message contents are preserved.
+the selected language; your custom break labels and Slack message contents are preserved.
 
 | Setting | Default | Description |
 |---|---|---|
+| `language` | `"system"` | Follow the device, or use `en`, `tr`, `es`, `it`, `fr`, `de`, `ru`, `uk`, `hi`, `zh`, `ja`, `ko`, `pt`, `nb`, `da`, `sv` |
 | `workStart` / `workEnd` | `"08:45"` / `"18:00"` | Work hours |
 | `workDays` | `[1,2,3,4,5]` | 1 = Monday through 7 = Sunday |
 | `breaks` | Lunch 12:00–13:00 | Add breaks such as `{"name": "Coffee break", "start": "15:00", "end": "15:15"}` |
@@ -220,6 +242,7 @@ bash uninstall.sh --all    # Also remove settings, cached prayer times, and logs
 
 ## Project files
 
+- `Sources/Localization.swift` / `Assets/Localizations.json`: language resolution, translated UI strings, and locale formatting.
 - `Sources/main.swift`: menu bar, scheduling, idle activity, and launch at login.
 - `Sources/TemporaryLock.swift`: temporary PIN screen and multiple displays.
 - `Sources/LockPower.swift`: battery status and delayed hardware brightness control.

@@ -10,9 +10,9 @@ struct BatteryStatus {
     static let unavailable = BatteryStatus(percentage: nil, charging: false, pluggedIn: false)
 
     var text: String {
-        guard let percentage else { return "Battery information unavailable" }
+        guard let percentage else { return L10n.text("Battery information unavailable") }
         let state = charging ? "Charging" : pluggedIn ? (percentage == 100 ? "Fully charged" : "Plugged in") : "On battery"
-        return "\(percentage)% · \(state)"
+        return "\(L10n.percent(percentage)) · \(L10n.text(state))"
     }
 
     var symbol: String {

@@ -17,6 +17,7 @@ esac
 APP="build/Slack Wake Lock.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp Assets/Localizations.json "$APP/Contents/Resources/Localizations.json"
 cp Assets/Wakelock.icns "$APP/Contents/Resources/Wakelock.icns"
 
 for architecture in "${ARCHITECTURES[@]}"; do
@@ -42,7 +43,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key>              <string>Slack Wake Lock</string>
   <key>CFBundleDisplayName</key>       <string>Slack Wake Lock</string>
   <key>CFBundleDevelopmentRegion</key> <string>en</string>
-  <key>CFBundleLocalizations</key>     <array><string>en</string></array>
+  <key>CFBundleLocalizations</key>     <array><string>en</string><string>tr</string><string>es</string><string>it</string><string>fr</string><string>de</string><string>ru</string><string>uk</string><string>hi</string><string>zh</string><string>ja</string><string>ko</string><string>pt</string><string>nb</string><string>da</string><string>sv</string></array>
   <key>CFBundleExecutable</key>        <string>Wakelock</string>
   <key>CFBundleIconFile</key>          <string>Wakelock.icns</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>

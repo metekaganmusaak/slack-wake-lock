@@ -23,6 +23,7 @@ final class TemporaryLockController: NSObject {
     init(dimming: LockDimmingController? = nil) {
         self.dimming = dimming ?? LockDimmingController()
         super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshLanguage), name: L10n.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(rebuildWindows),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
         let workspace = NSWorkspace.shared.notificationCenter
@@ -155,6 +156,16 @@ final class TemporaryLockController: NSObject {
         window?.makeFirstResponder(window?.lockView.passwordField)
     }
 
+    @objc private func refreshLanguage() {
+        guard isLocked else { return }
+        for window in windows {
+            window.lockView.refreshLanguage()
+            window.lockView.updateSlack(slackPreviews, status: slackStatus)
+        }
+        updateClock()
+        updateBattery()
+    }
+
     @objc private func updateClock() {
         let now = Date()
         for window in windows { window.lockView.updateClock(now) }
@@ -191,7 +202,7 @@ final class TemporaryLockController: NSObject {
     func showSlackTest() {
         lock()
         guard isLocked else { return }
-        slackNotifications.consume([SlackNotificationPreview(sourceID: UUID().uuidString,
+        slackNotifications.consume([SlackNotificationPreview(sourceID: "local-test-" + UUID().uuidString,
             title: "Slack Wake Lock · Local notification test", body: "Testing the Slack preview panel and extra alert sound. No actual Slack message was sent.", receivedAt: Date())])
     }
 }
@@ -231,31 +242,36 @@ final class TemporaryLockView: NSView {
     var onSubmit: ((String) -> Bool)?
     private let timeLabel = NSTextField(labelWithString: "")
     private let dateLabel = NSTextField(labelWithString: "")
-    private let errorLabel = NSTextField(labelWithString: " ")
-    private let batteryLabel = NSTextField(labelWithString: "")
+    private let errorLabel = NSTextField(wrappingLabelWithString: " ")
+    private let batteryLabel = NSTextField(wrappingLabelWithString: "")
     private let batteryIcon = NSImageView()
     private let slackStack = NSStackView()
+    private let titleLabel = NSTextField(wrappingLabelWithString: "")
+    private let hintLabel = NSTextField(wrappingLabelWithString: "")
+    private let footerLabel = NSTextField(wrappingLabelWithString: "")
+    private let unlockButton = NSButton(title: "", target: nil, action: nil)
+    private let lockIcon = NSImageView()
+    private var hasPINError = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         appearance = NSAppearance(named: .darkAqua)
 
+        refreshLanguage()
         timeLabel.font = .systemFont(ofSize: 76, weight: .thin)
         dateLabel.font = .systemFont(ofSize: 18, weight: .medium)
-        let icon = NSImageView(image: NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Locked")!)
+        let icon = lockIcon
         icon.contentTintColor = .white
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.widthAnchor.constraint(equalToConstant: 32).isActive = true
         icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
-        let title = NSTextField(labelWithString: "Screen locked")
+        let title = titleLabel
         title.font = .systemFont(ofSize: 24, weight: .semibold)
-        let hint = NSTextField(labelWithString: "Enter your PIN to continue.")
+        let hint = hintLabel
         hint.font = .systemFont(ofSize: 14)
         hint.textColor = .secondaryLabelColor
 
-        passwordField.placeholderString = "PIN"
-        passwordField.setAccessibilityLabel("Temporary screen lock PIN")
         passwordField.font = .systemFont(ofSize: 20)
         passwordField.alignment = .center
         passwordField.bezelStyle = .roundedBezel
@@ -266,13 +282,21 @@ final class TemporaryLockView: NSView {
         passwordField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         passwordField.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
-        let button = NSButton(title: "Unlock", target: self, action: #selector(unlock))
+        let button = unlockButton
+        button.target = self
+        button.action = #selector(unlock)
         button.bezelStyle = .rounded
         errorLabel.font = .systemFont(ofSize: 13)
         errorLabel.textColor = .systemRed
-        let footer = NSTextField(labelWithString: "Slack Wake Lock · Temporary screen lock")
+        let footer = footerLabel
         footer.font = .systemFont(ofSize: 12)
         footer.textColor = .secondaryLabelColor
+
+        for label in [title, hint, footer, errorLabel, batteryLabel] {
+            label.alignment = .center
+            label.preferredMaxLayoutWidth = 520
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
 
         batteryLabel.font = .systemFont(ofSize: 14, weight: .medium)
         batteryLabel.setAccessibilityIdentifier("lockBatteryStatus")
@@ -294,6 +318,7 @@ final class TemporaryLockView: NSView {
         NSLayoutConstraint.activate([
             stack.centerXAnchor.constraint(equalTo: centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -48),
         ])
 
         slackStack.orientation = .vertical
@@ -310,6 +335,17 @@ final class TemporaryLockView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func refreshLanguage() {
+        titleLabel.stringValue = L10n.text("Screen locked")
+        hintLabel.stringValue = L10n.text("Enter your PIN to continue.")
+        footerLabel.stringValue = "Slack Wake Lock · " + L10n.text("Temporary screen lock")
+        passwordField.placeholderString = L10n.text("PIN")
+        passwordField.setAccessibilityLabel(L10n.text("Temporary screen lock PIN"))
+        unlockButton.title = L10n.text("Unlock")
+        lockIcon.image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: L10n.text("Locked"))
+        if hasPINError { errorLabel.stringValue = L10n.text("Incorrect PIN. Try again.") }
+    }
 
     func updateClock(_ date: Date) {
         timeLabel.stringValue = Fmt.hm.string(from: date)
@@ -336,18 +372,18 @@ final class TemporaryLockView: NSView {
         heading.font = .systemFont(ofSize: 16, weight: .semibold)
         slackStack.addArrangedSubview(heading)
         if previews.isEmpty {
-            let label = NSTextField(wrappingLabelWithString: status)
+            let label = NSTextField(wrappingLabelWithString: L10n.text(status))
             label.font = .systemFont(ofSize: 12)
             label.textColor = .secondaryLabelColor
             label.preferredMaxLayoutWidth = 320
             slackStack.addArrangedSubview(label)
         }
         for preview in previews {
-            let title = NSTextField(wrappingLabelWithString: preview.title)
+            let title = NSTextField(wrappingLabelWithString: preview.sourceID.hasPrefix("local-test-") ? "Slack Wake Lock · " + L10n.text("Local notification test") : preview.title)
             title.font = .systemFont(ofSize: 14, weight: .semibold)
             title.maximumNumberOfLines = 2
             title.preferredMaxLayoutWidth = 320
-            let body = NSTextField(wrappingLabelWithString: preview.body)
+            let body = NSTextField(wrappingLabelWithString: preview.sourceID.hasPrefix("local-test-") ? L10n.text("Testing the Slack preview panel and extra alert sound. No actual Slack message was sent.") : preview.body)
             body.font = .systemFont(ofSize: 13)
             body.maximumNumberOfLines = 4
             body.preferredMaxLayoutWidth = 320
@@ -363,7 +399,8 @@ final class TemporaryLockView: NSView {
         let password = passwordField.stringValue
         clearPassword()
         if onSubmit?(password) != true {
-            errorLabel.stringValue = "Incorrect PIN. Try again."
+            hasPINError = true
+            errorLabel.stringValue = L10n.text("Incorrect PIN. Try again.")
             window?.makeFirstResponder(passwordField)
             NSSound.beep()
         }

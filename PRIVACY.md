@@ -14,7 +14,7 @@ The data paths and `local.wakelock` bundle identifier are retained for
 compatibility with earlier Wakelock versions. The app's display name is
 Slack Wake Lock.
 
-- `~/Library/Application Support/Wakelock/config.json`: work hours and preferences.
+- `~/Library/Application Support/Wakelock/config.json`: work hours, language selection, and preferences.
 - `state.json` and `prayer-cache.json` in the same folder: pause state and optional prayer-time cache.
 - `~/Library/Logs/Wakelock.log`: app state, permission errors, nudge status, and notification counts.
 - `~/Library/LaunchAgents/local.wakelock.plist`: app path for launch at login, when enabled.
@@ -38,6 +38,8 @@ received, without translation.
 The temporary screen's fixed PIN is **123456**, visible in the source code.
 It is not your macOS account password. This overlay does not replace the
 secure macOS lock screen.
+
+UI translations are bundled with the app and do not use an online translation service.
 
 ## Network requests
 

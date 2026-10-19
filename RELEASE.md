@@ -1,12 +1,12 @@
-# Slack Wake Lock v1.0.0 — macOS
+# Slack Wake Lock v1.1.0 — macOS
 
 Requires macOS 13 or later. Universal app for Apple Silicon and Intel Macs.
-The interface is in English. This is an independent project, not affiliated
+The interface supports 16 languages and follows the device language by default. This is an independent project, not affiliated
 with Slack or Salesforce.
 
 ## Download and install
 
-1. Extract `Slack-Wake-Lock-1.0.0-macos-universal.zip`.
+1. Extract `Slack-Wake-Lock-1.1.0-macos-universal.zip`.
 2. Copy `Slack Wake Lock.app` to Applications and open it.
 3. Enable Slack Wake Lock in System Settings → Privacy & Security → Accessibility.
 4. Sign in to the Slack desktop app. Slack Wake Lock appears in the menu bar.
@@ -38,7 +38,10 @@ See [Apple's guidance](https://support.apple.com/102445).
 - The last three new Slack banner previews, with an optional extra alert sound.
 - A macOS app icon inspired by Slack's colors.
 - Optional Friday prayer times, disabled on new installations.
-- English menus, lock screen, alerts, dates, logs, installer, and documentation.
+- Language menu with 16 languages, alphabetical names, and a device-language default.
+- Immediate language switching for menus, alerts, dates, battery status, and the temporary lock screen.
+- Language selection is saved across restarts; existing preferences are preserved.
+- Logs, installation scripts, and documentation remain in English.
 
 ## Limitations
 
@@ -68,8 +71,8 @@ settings, cached prayer times, and logs. Automatic installation uses
 
 1. Create a public `slack-wake-lock` repository under your personal account.
 2. Extract the source ZIP and upload its contents to the repository root. Upload the source files themselves, not just the ZIP.
-3. Select Releases → Draft a new release. Create tag `v1.0.0` and use the title `Slack Wake Lock v1.0.0`.
-4. Attach the app ZIP and `Slack-Wake-Lock-1.0.0-SHA256SUMS.txt`.
+3. Select Releases → Draft a new release. Create tag `v1.1.0` and use the title `Slack Wake Lock v1.1.0`.
+4. Attach the app ZIP and `Slack-Wake-Lock-1.1.0-SHA256SUMS.txt`.
 5. Copy the content above this publishing section into the release description and publish.
 
 For future versions, update `VERSION` and run `bash release.sh`. It creates
